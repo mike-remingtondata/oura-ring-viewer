@@ -5,9 +5,10 @@ local calendar date, so no timezone conversion is applied to it.
 """
 
 import datetime as dt
+from typing import Any
 
 
-def parse_day(value: object) -> dt.date | None:
+def parse_day(value: Any) -> dt.date | None:
     """Parse an Oura ``day`` value (``YYYY-MM-DD``) into a date, else None."""
     if not isinstance(value, str) or not value:
         return None

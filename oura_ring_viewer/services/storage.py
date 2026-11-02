@@ -9,8 +9,7 @@ operations are ordered to fail safe rather than wrapped atomically.
 """
 
 import datetime as dt
-from collections.abc import Iterable
-from typing import Any
+from typing import Any, Iterable
 
 from oura_ring_viewer.models import OuraDaily, OuraOAuthToken, OuraSyncState
 from oura_ring_viewer.services.normalize import NormalizedDay

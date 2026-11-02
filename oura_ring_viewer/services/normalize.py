@@ -12,9 +12,8 @@ rejected even though Python treats them as integers.
 """
 
 import datetime as dt
-from collections.abc import Callable, Iterable
+from typing import Any, Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
 
 from oura_ring_viewer.services.settings import (
     FAMILY_ACTIVITY,

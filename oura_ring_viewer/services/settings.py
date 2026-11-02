@@ -10,10 +10,31 @@ This module has no ``canvas_sdk`` or Django dependency on purpose, so the
 pure normalization layer and its tests can import from it freely.
 """
 
+PLUGIN_NAME: str = "oura_ring_viewer"
+PLUGIN_API_PATH: str = f"/plugin-io/api/{PLUGIN_NAME}"
+
 DAILY_RETENTION_DAYS: int = 90
 DEFAULT_RANGE_DAYS: int = 14
 RANGE_OPTIONS: tuple[int, ...] = (7, 14, 30, 90)
+
+# The patient's connection link is short-lived. The OAuth ``state`` gets a
+# longer window because the patient may need to sign in to Oura, or create an
+# Oura account, on the consent screen before the callback fires.
 MAGIC_LINK_TTL_SECONDS: int = 15 * 60
+STATE_TTL_SECONDS: int = 60 * 60
+
+# HMAC-SHA256 keys shorter than the hash output weaken the signature, and
+# PyJWT warns on them. Refuse to sign or verify with a short secret.
+MIN_SECRET_LENGTH: int = 32
+
+# Canvas patient ids are short alphanumeric keys. Anything else is rejected at
+# every route before it reaches the database or a template.
+MAX_PATIENT_ID_LENGTH: int = 64
+
+DISCLAIMER: str = (
+    "Oura Ring data is consumer wellness data shared by the patient. It is not "
+    "a medical device measurement and is not a substitute for clinical vitals."
+)
 
 # Oura returns at most one summary row per day per family, so a 90 day window
 # is 90 points per series. No downsampling is needed at v1 granularity.
