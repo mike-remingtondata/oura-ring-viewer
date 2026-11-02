@@ -22,16 +22,41 @@ later as an opt-in command.
 
 ## Status
 
-Early scaffold. Settled and in place:
+In progress. Built and tested:
 
 - Manifest, application entry point, and the three custom data models
-- Environment routing between the Oura sandbox and production collections
-- Token storage seam (`services/crypto.py`)
-- Route shapes and the auth model for both protocols
+- Oura API v2 client: token exchange, refresh, paginated collection reads
+- OAuth orchestration with single-use refresh token rotation
+- Sync engine: refresh at most once per sync, per-family 403 handling,
+  windowing, retention purge
+- Normalization of raw Oura records into the plugin's own payload keys
+- Persistence: idempotent bulk upserts, patient-scoped reads and disconnect
 
-Not yet written: the handler bodies, the Oura API client, sync, aggregation,
-and the chart template. Routes currently raise `NotImplementedError` rather
-than returning a plausible empty response, so an unfinished route fails loudly.
+Not yet written: the two protocols' handler bodies, magic-link signing, and the
+chart template. Those routes raise `NotImplementedError` rather than returning a
+plausible empty response, so an unfinished route fails loudly.
+
+## Permissions requested
+
+Only `daily` and `spo2`. Those cover the sleep, readiness and activity
+summaries, the sleep periods, and overnight SpO2, which is everything v1 reads.
+
+The plugin deliberately does **not** request `personal` (age, weight, sex,
+email), intraday `heartrate`, or `workout`. Not holding data is a stronger
+position than holding it and ignoring it, and it means no Oura user identifier
+is stored either.
+
+## Partial access
+
+Oura's consent screen lets a patient untick individual scopes. If an endpoint
+returns 403, the sync skips that metric family and keeps the rest, rather than
+treating the whole connection as broken. A 401 is different: it means the
+access token expired, so the sync refreshes once and retries.
+
+If every endpoint returns 403, nothing was fetched and the sync records an
+`all_forbidden` error. To be confirmed against live behavior: Oura may also
+return 403 when a ring owner's Oura membership has lapsed, in which case this
+error is the visible symptom.
 
 ## Data model
 
@@ -60,11 +85,18 @@ sandbox collection, so a typo cannot reach live patient data.
 
 ## Development
 
-Requires Python 3.12 or newer.
+Requires Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv run --python 3.12 --with pytest pytest -q
+uv sync
+uv run pytest -q --cov=oura_ring_viewer
+uv run mypy oura_ring_viewer tests
 ```
+
+The Canvas SDK's pytest plugin creates the plugin's tables in a SQLite test
+database using the same DDL generation as a production install, so the storage
+and sync tests run against the real schema. The Oura client is mocked at the
+HTTP layer; nothing in the test suite touches the network.
 
 ## License
 

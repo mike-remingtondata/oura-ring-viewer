@@ -4,6 +4,9 @@ Storage note: the Canvas plugin sandbox blocks ``cryptography.fernet``, so
 tokens are held opaquely rather than encrypted at rest. See
 ``services/crypto.py`` for the seam and the full rationale. This mirrors the
 approach taken by ``dexcom-cgm-viewer``, which cleared Canvas security review.
+
+No Oura user identifier is stored. Resolving one needs the ``personal`` scope,
+which this plugin deliberately does not request.
 """
 
 # mypy: disable-error-code="var-annotated"
@@ -20,7 +23,6 @@ class OuraOAuthToken(CustomModel):
     access_token = TextField()
     refresh_token = TextField()
     expires_at = DateTimeField()
-    oura_user_id = CharField(max_length=128, blank=True, default="")
     scopes = CharField(max_length=256, blank=True, default="")
     connected_at = DateTimeField()
     last_refresh_at = DateTimeField(null=True, blank=True)

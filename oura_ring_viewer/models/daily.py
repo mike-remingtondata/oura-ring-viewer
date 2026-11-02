@@ -23,16 +23,13 @@ from canvas_sdk.v1.data.base import CustomModel
 class OuraDaily(CustomModel):
     """One row per (patient, day, family).
 
-    ``family`` is one of the FAMILY_* constants. ``payload`` holds the
-    normalized metrics for that family so a new Oura field does not require a
-    schema migration. Anything surfaced in the chart is read from the
-    normalized columns, not from ``payload``.
+    ``family`` is one of ``settings.FAMILIES``. ``payload`` holds the metrics
+    for that family under plugin-defined keys produced by
+    ``services/normalize.py``; raw Oura responses are never stored. Keeping
+    the metrics in one JSON column means a new metric does not need a schema
+    migration, and the unique constraint makes re-syncing an overlapping
+    range idempotent.
     """
-
-    FAMILY_SLEEP = "sleep"
-    FAMILY_READINESS = "readiness"
-    FAMILY_ACTIVITY = "activity"
-    FAMILY_SPO2 = "spo2"
 
     patient_id = CharField(max_length=64)
     day = DateField()
