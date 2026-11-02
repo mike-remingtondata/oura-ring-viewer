@@ -1,4 +1,9 @@
-"""Tests for the staff chart API, against real tables and real templates."""
+"""Tests for the staff chart API, against real tables and real templates.
+
+These tests cover route behavior, so the per-patient access decision is stubbed
+to "allowed" here. The access rules themselves, and the gate's refusals, are
+tested against real Staff, Patient and care-team rows in ``test_access.py``.
+"""
 
 import datetime as dt
 import json
@@ -31,6 +36,13 @@ SECRETS = {
     "OURA_MAGIC_LINK_SECRET": "m" * 40,
 }
 STAFF = "staff-42"
+STAFF_HEADERS = {"canvas-logged-in-user-type": "Staff", "canvas-logged-in-user-id": STAFF}
+
+
+@pytest.fixture(autouse=True)
+def _access_granted() -> Any:
+    with patch("oura_ring_viewer.protocols.chart_api.staff_can_view", return_value=True) as granted:
+        yield granted
 
 
 class _Request:
@@ -53,7 +65,9 @@ def _api(
     headers: dict[str, str] | None = None,
 ) -> OuraChartAPI:
     handler = OuraChartAPI(event=_Event(method, path))
-    handler.request = _Request({"patient_id": PATIENT, **(query or {})}, headers or {})
+    handler.request = _Request(
+        {"patient_id": PATIENT, **(query or {})}, STAFF_HEADERS if headers is None else headers
+    )
     handler.secrets = SECRETS if secrets is None else secrets
     return handler
 
@@ -92,7 +106,10 @@ def test_every_route_rejects_an_implausible_patient_id(
     handler = _api(method, path, {"patient_id": patient_id})
     effects = getattr(handler, name)()
     assert effects[0].status_code == HTTPStatus.BAD_REQUEST
-    assert _json(effects[0]) == {"error": "invalid_patient_id"}
+    if name == "chart_shell":
+        assert "could not identify the patient" in effects[0].content.decode()
+    else:
+        assert _json(effects[0]) == {"error": "invalid_patient_id"}
 
 
 class TestShellAndData:
@@ -202,12 +219,12 @@ class TestSendLink:
         assert _json(effects[0])["settings"] == [expected]
         assert get_sync_state(PATIENT) is None
 
-    def test_portal_is_the_default_and_needs_a_staff_sender(self) -> None:
+    def test_portal_is_the_default_channel(self) -> None:
         body = _json(self._send(channels=None)[-1])
-        assert (body["portal_status"], body["portal_error"]) == ("skipped", "no_staff_sender")
+        assert body["portal_error"] != "not_selected"
 
     def test_portal_is_skipped_when_the_patient_cannot_be_messaged(self) -> None:
-        body = _json(self._send(channels="portal", headers={"canvas-logged-in-user-id": STAFF})[-1])
+        body = _json(self._send(channels="portal")[-1])
         assert (body["portal_status"], body["portal_error"]) == ("skipped", "no_messageable_channel")
 
     def test_portal_message_effect_is_emitted_before_the_response(self) -> None:
@@ -217,7 +234,7 @@ class TestSendLink:
             patch("oura_ring_viewer.protocols.chart_api.Message") as message,
         ):
             message.return_value.create_and_send.return_value = sentinel
-            effects = self._send(channels="portal", headers={"canvas-logged-in-user-id": STAFF})
+            effects = self._send(channels="portal")
 
         assert effects[0] is sentinel
         kwargs = message.call_args.kwargs
@@ -234,7 +251,7 @@ class TestSendLink:
             message.return_value.create_and_send.side_effect = ValidationError.from_exception_data(
                 "Message", []
             )
-            effects = self._send(channels="portal", headers={"canvas-logged-in-user-id": STAFF})
+            effects = self._send(channels="portal")
         body = _json(effects[-1])
         assert len(effects) == 1
         assert (body["portal_status"], body["portal_error"]) == ("failed", "invalid_sender_or_recipient")

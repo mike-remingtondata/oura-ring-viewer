@@ -7,15 +7,20 @@ Routes:
   POST /send-link?patient_id=  -> mint a connection link, optionally via the portal
   POST /disconnect?patient_id= -> purge tokens and every cached row
 
-Every route requires a Canvas staff session (``StaffSessionAuthMixin``) and
-rejects a ``patient_id`` that is not a plausible Canvas key before touching the
-database or a template. Patient visibility follows Canvas's staff model: like
-``dexcom-cgm-viewer``, this plugin does not add a per-patient authorization
-check of its own. No route ever returns token material.
+Every route requires a Canvas staff session (``StaffSessionAuthMixin``), and
+then passes ``_gate`` before touching patient data. The gate rejects a
+``patient_id`` that is not a plausible Canvas key, refuses to run with an
+unrecognized access rule, identifies the calling staff member from the
+Canvas-set session headers, and checks that member against the practice's
+``OURA_ACCESS_RULE`` (see ``services/access.py``). The staff session alone is
+not enough: per the Canvas docs it "makes no assertions about the particular
+staff member". No route ever returns token material.
 """
 
 import datetime as dt
+from dataclasses import dataclass
 from http import HTTPStatus
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -29,6 +34,14 @@ from canvas_sdk.v1.data.common import ContactPointState, ContactPointSystem
 from logger import log
 
 from oura_ring_viewer.services import magic_link
+from oura_ring_viewer.services.access import (
+    ACCESS_RULE,
+    RULE_CARE_TEAM,
+    RULES,
+    logged_in_staff_id,
+    resolve_rule,
+    staff_can_view,
+)
 from oura_ring_viewer.services.chart_data import build_payload
 from oura_ring_viewer.services.config import (
     LINK_SECRETS,
@@ -51,11 +64,54 @@ from oura_ring_viewer.services.settings import (
 from oura_ring_viewer.services.storage import delete_all_for_patient, upsert_sync_state
 from oura_ring_viewer.services.sync import sync_patient
 
-STAFF_ID_HEADER = "canvas-logged-in-user-id"
-
-
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
+
+
+@dataclass(frozen=True)
+class _Grant:
+    """A request that passed the gate: who is asking about whom."""
+
+    patient_id: str
+    staff_id: str
+
+
+def _gate(request: Any, secrets: dict[str, str] | None, *, html: bool = False) -> _Grant | Response:
+    """Validate the patient id and the caller's access, in that order.
+
+    Returns a grant, or the response to send instead. ``html`` selects a
+    readable page rather than JSON, for the route the chart drawer opens.
+    """
+    patient_id = clean_patient_id(request.query_params.get("patient_id"))
+    if patient_id is None:
+        return _deny("invalid_patient_id", HTTPStatus.BAD_REQUEST, html,
+                     "This chart could not identify the patient.")
+
+    rule = resolve_rule(secrets)
+    if rule is None:
+        setting = f"{ACCESS_RULE} (must be one of: {', '.join(RULES)})"
+        if html:
+            return _staff_page(f"This plugin has an invalid setting: {setting}.",
+                               HTTPStatus.SERVICE_UNAVAILABLE)
+        return _misconfigured([setting])
+
+    staff_id = logged_in_staff_id(request.headers)
+    if staff_id is None:
+        return _deny("not_staff", HTTPStatus.FORBIDDEN, html,
+                     "Oura data is only available to signed-in staff.")
+
+    if not staff_can_view(staff_id, patient_id, rule):
+        log.info(f"oura access denied: staff {staff_id}, patient {patient_id}, rule {rule}")
+        message = (
+            "Oura data for this patient is limited to the patient's care team, and you "
+            "are not on it. A Canvas administrator can change this with the "
+            f"{ACCESS_RULE} setting."
+            if rule == RULE_CARE_TEAM
+            else "Your staff account does not have access to this patient's Oura data."
+        )
+        return _deny("forbidden", HTTPStatus.FORBIDDEN, html, message, rule=rule)
+
+    return _Grant(patient_id=patient_id, staff_id=staff_id)
 
 
 class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
@@ -64,32 +120,33 @@ class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
     @api.get("/")
     def chart_shell(self) -> list[Response | Effect]:
         """Serve the chart HTML shell bound to the active patient."""
-        patient_id = clean_patient_id(self.request.query_params.get("patient_id"))
-        if patient_id is None:
-            return [_bad_patient()]
+        grant = _gate(self.request, self.secrets, html=True)
+        if isinstance(grant, Response):
+            return [grant]
         html = render_to_string(
             "templates/chart.html",
-            context={"patient_id": patient_id, "api_path": PLUGIN_API_PATH},
+            context={"patient_id": grant.patient_id, "api_path": PLUGIN_API_PATH},
         )
         return [HTMLResponse(content=html or "", status_code=HTTPStatus.OK)]
 
     @api.get("/data")
     def chart_data(self) -> list[Response | Effect]:
         """Return the JSON view-model for the requested range."""
-        patient_id = clean_patient_id(self.request.query_params.get("patient_id"))
-        if patient_id is None:
-            return [_bad_patient()]
+        grant = _gate(self.request, self.secrets)
+        if isinstance(grant, Response):
+            return [grant]
         range_days = parse_range_days(self.request.query_params.get("range"))
         # Reads local tables only; an exception here is a bug and should
         # surface to monitoring rather than be swallowed.
-        return [JSONResponse(content=build_payload(patient_id, range_days, now=_now()))]
+        return [JSONResponse(content=build_payload(grant.patient_id, range_days, now=_now()))]
 
     @api.post("/sync")
     def sync(self) -> list[Response | Effect]:
         """Pull fresh summaries from Oura for the requested range."""
-        patient_id = clean_patient_id(self.request.query_params.get("patient_id"))
-        if patient_id is None:
-            return [_bad_patient()]
+        grant = _gate(self.request, self.secrets)
+        if isinstance(grant, Response):
+            return [grant]
+        patient_id = grant.patient_id
         problems = config_problems(self.secrets, SYNC_SECRETS)
         if problems:
             return [_misconfigured(problems)]
@@ -129,9 +186,10 @@ class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
         The link is always returned so staff can share it another way if
         portal delivery is unavailable.
         """
-        patient_id = clean_patient_id(self.request.query_params.get("patient_id"))
-        if patient_id is None:
-            return [_bad_patient()]
+        grant = _gate(self.request, self.secrets)
+        if isinstance(grant, Response):
+            return [grant]
+        patient_id = grant.patient_id
         problems = config_problems(self.secrets, LINK_SECRETS)
         if problems:
             return [_misconfigured(problems)]
@@ -150,7 +208,7 @@ class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
         portal_error: str | None = "not_selected"
         if "portal" in _channels(self.request.query_params.get("channels")):
             effect, portal_status, portal_error = _portal_message(
-                sender_id=(self.request.headers.get(STAFF_ID_HEADER) or "").strip(),
+                sender_id=grant.staff_id,
                 patient_id=patient_id,
                 link=link,
             )
@@ -169,10 +227,10 @@ class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
     @api.post("/disconnect")
     def disconnect(self) -> list[Response | Effect]:
         """Purge stored tokens and every cached row for the patient."""
-        patient_id = clean_patient_id(self.request.query_params.get("patient_id"))
-        if patient_id is None:
-            return [_bad_patient()]
-        delete_all_for_patient(patient_id)
+        grant = _gate(self.request, self.secrets)
+        if isinstance(grant, Response):
+            return [grant]
+        delete_all_for_patient(grant.patient_id)
         return [JSONResponse(content={"disconnected": True})]
 
 
@@ -192,8 +250,6 @@ def _portal_message(
     consenting, active contact point, so that is checked first rather than
     emitting an effect known to fail.
     """
-    if not sender_id:
-        return None, "skipped", "no_staff_sender"
     if not _has_messageable_channel(patient_id):
         return None, "skipped", "no_messageable_channel"
     body = (
@@ -229,8 +285,21 @@ def _error(code: str, status: HTTPStatus) -> JSONResponse:
     return JSONResponse(content={"error": code}, status_code=status)
 
 
-def _bad_patient() -> JSONResponse:
-    return _error("invalid_patient_id", HTTPStatus.BAD_REQUEST)
+def _deny(
+    code: str, status: HTTPStatus, html: bool, message: str, *, rule: str | None = None
+) -> Response:
+    """A refusal: a readable page for the chart drawer, JSON for the API routes."""
+    if html:
+        return _staff_page(message, status)
+    content: dict[str, str] = {"error": code}
+    if rule is not None:
+        content["rule"] = rule
+    return JSONResponse(content=content, status_code=status)
+
+
+def _staff_page(message: str, status: HTTPStatus) -> HTMLResponse:
+    html = render_to_string("templates/staff_message.html", context={"message": message})
+    return HTMLResponse(content=html or "", status_code=status)
 
 
 def _misconfigured(problems: list[str]) -> JSONResponse:

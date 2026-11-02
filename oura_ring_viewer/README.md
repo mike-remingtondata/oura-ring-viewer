@@ -36,16 +36,23 @@ connection completes.
 
 ## Status
 
-Feature complete for v1 and tested end to end against mocked Oura responses:
-every module is at 100% line coverage, strict mypy is clean, and
-`canvas validate` loads every handler in the Canvas sandbox.
+Feature complete for v1. Every module is at 100% line coverage, strict mypy is
+clean, and `canvas validate` loads every handler in the Canvas sandbox.
 
-Not yet done, and not possible without credentials:
+Verified against Oura itself, without an Oura account:
 
-- Verifying endpoint paths, scope strings and response shapes against a live
-  Oura API application (see the note at the top of `services/settings.py`)
+- Every URL, scope, endpoint path, query parameter and response field the
+  plugin uses, checked against Oura's published OpenAPI specification (1.43).
+- The real client and normalizer, run against Oura's live sandbox, which
+  serves 14 days of fake data for any bearer token. Oura's `end_date` is
+  exclusive; the client already requests one day past the window.
+
+Not yet done, because it needs a registered Oura API application:
+
+- A patient completing the connection flow, which needs the application's
+  client ID and secret.
 - Installing on a Canvas instance and running the Canvas Plugin Assistant
-  security and performance reviews
+  security and performance reviews.
 
 ## Permissions requested
 
@@ -65,9 +72,10 @@ which data the patient is not sharing. A 401 is different: it means the access
 token expired, so the sync refreshes once and retries.
 
 If every endpoint returns 403, nothing was fetched and the sync records an
-`all_forbidden` error. To be confirmed against live behavior: Oura may also
-return 403 when a ring owner's Oura membership has lapsed, in which case this
-error is the visible symptom.
+`all_forbidden` error. Oura's API documentation confirms the usual cause: a 403
+"usually means the user's subscription to Oura has expired and their data is
+not available", so the chart tells staff the patient's membership may have
+lapsed.
 
 ## Data model
 
@@ -90,6 +98,7 @@ Five manifest variables, two of them sensitive:
 | `OURA_REDIRECT_URI` | no | `https://<your-instance>/plugin-io/api/oura_ring_viewer/callback`, registered with Oura exactly |
 | `OURA_ENVIRONMENT` | no | `production`, or anything else for sandbox |
 | `OURA_MAGIC_LINK_SECRET` | yes | Random string of at least 32 characters, used to sign patient links |
+| `OURA_ACCESS_RULE` | no | Who may see a patient's Oura data: `care_team` (default) or `practice` |
 
 Each route checks only the settings it needs and reports anything missing or
 unusable to staff by name, rather than failing when a patient taps a link.
@@ -99,12 +108,32 @@ unusable to staff by name, rather than failing when a patient taps a link.
 - `OURA_REDIRECT_URI` must be `https`, since the connection link it derives
   carries a bearer token. Plain `http` is accepted only for `localhost`.
 - `OURA_MAGIC_LINK_SECRET` shorter than 32 characters is refused.
+- `OURA_ACCESS_RULE` with any value other than `care_team` or `practice` is
+  refused and reported, never treated as permission to widen access.
+
+## Who can see a patient's data
+
+A Canvas staff session only proves the caller is staff; per the Canvas
+SimpleAPI docs it "makes no assertions about the particular staff member". So
+every staff route checks the caller against the practice's `OURA_ACCESS_RULE`
+before it reads or changes anything for that patient:
+
+- **`care_team`** (default): only staff who are active members of the patient's
+  care team. Least privilege, so it is what a practice gets unless it chooses
+  otherwise.
+- **`practice`**: any active staff member, for practices that do not maintain
+  care teams or that rely on covering clinicians.
+
+Inactive staff never qualify under either rule. The caller is identified from
+the session headers Canvas sets itself and strips from client requests. A
+refused request changes nothing: no link is issued and nothing is deleted.
 
 ## Security notes
 
-- **Staff routes** require a Canvas staff session. **Patient routes**
-  (`/connect`, `/callback`) are public by necessity and are protected instead
-  by signed, expiring tokens bound to a single-use nonce.
+- **Staff routes** require a Canvas staff session and then pass the
+  per-patient access rule above. **Patient routes** (`/connect`, `/callback`)
+  are public by necessity and are protected instead by signed, expiring tokens
+  bound to a single-use nonce.
 - Link and OAuth state tokens carry a type claim, so neither can be replayed as
   the other. The signing algorithm is pinned, so an unsigned `alg: none` token
   is rejected.
@@ -122,13 +151,12 @@ unusable to staff by name, rather than failing when a patient taps a link.
 
 ## Open questions
 
-- **Per-patient authorization.** Any authenticated staff session can call the
-  staff routes for any patient, matching `dexcom-cgm-viewer`. Confirm whether
-  Canvas expects plugins to add their own check.
-- **Revoking at Oura on disconnect.** Add once Oura's revoke endpoint is
-  confirmed against a live application.
-- **Lapsed membership.** Confirm whether Oura returns 403 for a ring owner whose
-  membership has lapsed, and adjust the staff wording if not.
+- **Certifying against the sandbox.** Whether Canvas's partner review can be
+  done against Oura's sandbox, or needs a live OAuth flow with production
+  credentials. Canvas's documentation does not say; asked of the partner
+  program directly.
+- **Revoking at Oura on disconnect.** Add once Oura's revoke endpoint can be
+  exercised with a registered application.
 
 ## Development
 

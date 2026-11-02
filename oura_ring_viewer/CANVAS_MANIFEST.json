@@ -17,12 +17,20 @@
             {
                 "class": "oura_ring_viewer.protocols.chart_api:OuraChartAPI",
                 "description": "Staff-authenticated SimpleAPI: chart shell, /data, sync, send-link, disconnect.",
-                "data_access": {"event": "", "read": [], "write": []}
+                "data_access": {
+                    "event": "",
+                    "read": [],
+                    "write": []
+                }
             },
             {
                 "class": "oura_ring_viewer.protocols.oauth_api:OuraOAuthAPI",
                 "description": "Patient-facing OAuth bridge (JWT-authenticated): /connect and /callback handlers for the Oura hosted login.",
-                "data_access": {"event": "", "read": [], "write": []}
+                "data_access": {
+                    "event": "",
+                    "read": [],
+                    "write": []
+                }
             }
         ],
         "commands": [],
@@ -31,11 +39,30 @@
         "views": []
     },
     "variables": [
-        {"name": "OURA_CLIENT_ID", "sensitive": false},
-        {"name": "OURA_CLIENT_SECRET", "sensitive": true},
-        {"name": "OURA_REDIRECT_URI", "sensitive": false},
-        {"name": "OURA_ENVIRONMENT", "sensitive": false},
-        {"name": "OURA_MAGIC_LINK_SECRET", "sensitive": true}
+        {
+            "name": "OURA_CLIENT_ID",
+            "sensitive": false
+        },
+        {
+            "name": "OURA_CLIENT_SECRET",
+            "sensitive": true
+        },
+        {
+            "name": "OURA_REDIRECT_URI",
+            "sensitive": false
+        },
+        {
+            "name": "OURA_ENVIRONMENT",
+            "sensitive": false
+        },
+        {
+            "name": "OURA_MAGIC_LINK_SECRET",
+            "sensitive": true
+        },
+        {
+            "name": "OURA_ACCESS_RULE",
+            "sensitive": false
+        }
     ],
     "custom_data": {
         "namespace": "canvas__oura_ring_viewer",
