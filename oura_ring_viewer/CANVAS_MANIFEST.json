@@ -1,0 +1,49 @@
+{
+    "sdk_version": "0.35.0",
+    "plugin_version": "0.1.0",
+    "name": "oura_ring_viewer",
+    "description": "Brings a patient's Oura Ring sleep, readiness and activity data into the patient chart via a patient-scoped Application. Magic-link OAuth onboarding, on-demand sync over 7/14/30/90 day windows, and a read-only trend view. Presented as patient-generated wellness data, not clinical vitals.",
+    "components": {
+        "applications": [
+            {
+                "class": "oura_ring_viewer.applications.oura_chart_app:OuraChartApp",
+                "name": "Oura Ring",
+                "description": "View patient Oura Ring wellness data in the chart.",
+                "scope": "patient_specific",
+                "icon": "assets/icon.png"
+            }
+        ],
+        "protocols": [
+            {
+                "class": "oura_ring_viewer.protocols.chart_api:OuraChartAPI",
+                "description": "Staff-authenticated SimpleAPI: chart shell, /data, sync, send-link, disconnect.",
+                "data_access": {"event": "", "read": [], "write": []}
+            },
+            {
+                "class": "oura_ring_viewer.protocols.oauth_api:OuraOAuthAPI",
+                "description": "Patient-facing OAuth bridge (JWT-authenticated): /connect and /callback handlers for the Oura hosted login.",
+                "data_access": {"event": "", "read": [], "write": []}
+            }
+        ],
+        "commands": [],
+        "content": [],
+        "effects": [],
+        "views": []
+    },
+    "variables": [
+        {"name": "OURA_CLIENT_ID", "sensitive": false},
+        {"name": "OURA_CLIENT_SECRET", "sensitive": true},
+        {"name": "OURA_REDIRECT_URI", "sensitive": false},
+        {"name": "OURA_ENVIRONMENT", "sensitive": false},
+        {"name": "OURA_MAGIC_LINK_SECRET", "sensitive": true}
+    ],
+    "custom_data": {
+        "namespace": "canvas__oura_ring_viewer",
+        "access": "read_write"
+    },
+    "tags": {},
+    "references": [],
+    "license": "MIT",
+    "diagram": false,
+    "readme": "./README.md"
+}
