@@ -52,7 +52,7 @@
     <div id="notice" class="notice" hidden></div>
 
     <section id="intro">
-      <p>Share your Oura Ring summaries with your care team. They will see:</p>
+      <p id="lead">Share your Oura Ring summaries with your care team. They will see:</p>
       <ul>
         <li>Sleep score, total sleep, resting heart rate and HRV</li>
         <li>Readiness and daily steps</li>
@@ -119,6 +119,9 @@
     $("not-connected").hidden = connected || !AVAILABLE;
     $("unavailable").hidden = connected || AVAILABLE;
     $("connect").textContent = body.status === "reconnect" ? "Reconnect Oura Ring" : "Connect Oura Ring";
+    $("lead").textContent = connected
+      ? "You are sharing your Oura Ring summaries with your care team. They can see:"
+      : "Share your Oura Ring summaries with your care team. They will see:";
     if (connected && body.connected_at) {
       $("since").textContent = "Sharing since " + new Date(body.connected_at).toLocaleDateString() + ".";
     }
