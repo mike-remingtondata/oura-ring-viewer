@@ -15,7 +15,6 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-
 from canvas_sdk.templates.utils import _engine_for_plugin
 
 PLUGIN_DIR = Path(__file__).resolve().parent.parent / "oura_ring_viewer"

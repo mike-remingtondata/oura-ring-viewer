@@ -5,7 +5,11 @@ from typing import Any
 
 import pytest
 
-from oura_ring_viewer.services.chart_data import build_payload, connection_status, window
+from oura_ring_viewer.services.chart_data import (
+    build_payload,
+    connection_status,
+    window,
+)
 from oura_ring_viewer.services.normalize import NormalizedDay
 from oura_ring_viewer.services.settings import (
     DISCLAIMER,
@@ -16,7 +20,7 @@ from oura_ring_viewer.services.settings import (
 from oura_ring_viewer.services.storage import upsert_sync_state, upsert_tokens
 
 PATIENT = "chart-patient"
-NOW = dt.datetime(2026, 11, 2, 18, 0, tzinfo=dt.timezone.utc)
+NOW = dt.datetime(2026, 11, 2, 18, 0, tzinfo=dt.UTC)
 TODAY = NOW.date()
 
 

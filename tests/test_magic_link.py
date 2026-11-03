@@ -58,7 +58,7 @@ class TestRejection:
             magic_link.verify_link(token, "t" * 40, now=NOW)
 
     def test_tampered_payload(self) -> None:
-        header, payload, signature = magic_link.mint_link("pat-1", "n", SECRET, now=NOW).split(".")
+        header, _payload, signature = magic_link.mint_link("pat-1", "n", SECRET, now=NOW).split(".")
         forged = jwt.encode({"typ": "link", "p": "pat-2", "n": "n", "exp": NOW + 900}, "x" * 40)
         with pytest.raises(InvalidToken):
             magic_link.verify_link(f"{header}.{forged.split('.')[1]}.{signature}", SECRET, now=NOW)

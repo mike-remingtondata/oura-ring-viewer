@@ -5,9 +5,9 @@ from typing import Any
 import pytest
 
 from oura_ring_viewer.services.config import (
+    FETCH_SECRETS,
     LINK_SECRETS,
     OAUTH_SECRETS,
-    FETCH_SECRETS,
     build_client,
     clean_patient_id,
     config_problems,

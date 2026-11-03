@@ -11,9 +11,8 @@ which this plugin deliberately does not request.
 
 # mypy: disable-error-code="var-annotated"
 
-from django.db.models import CharField, DateTimeField, TextField, UniqueConstraint
-
 from canvas_sdk.v1.data.base import CustomModel
+from django.db.models import CharField, DateTimeField, TextField, UniqueConstraint
 
 
 class OuraOAuthToken(CustomModel):

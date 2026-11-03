@@ -41,7 +41,7 @@ from oura_ring_viewer.services.storage import get_sync_state, upsert_sync_state
 
 
 def _now() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.UTC)
 
 
 class OuraOAuthAPI(SimpleAPI):

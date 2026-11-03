@@ -12,8 +12,10 @@ rejected even though Python treats them as integers.
 """
 
 import datetime as dt
-from typing import Any, Callable, Iterable
+import math
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from oura_ring_viewer.services.settings import (
     FAMILY_ACTIVITY,
@@ -179,7 +181,7 @@ def _num(value: Any, low: float, high: float, *, allow_low: bool = True) -> floa
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     number = float(value)
-    if number != number:  # NaN
+    if math.isnan(number):
         return None
     if number < low or number > high or (number == low and not allow_low):
         return None
@@ -188,7 +190,7 @@ def _num(value: Any, low: float, high: float, *, allow_low: bool = True) -> floa
 
 def _int(value: Any, low: float, high: float, *, allow_low: bool = True) -> int | None:
     number = _num(value, low, high, allow_low=allow_low)
-    return None if number is None else int(round(number))
+    return None if number is None else round(number)
 
 
 def _round(value: float | None, places: int) -> float | None:

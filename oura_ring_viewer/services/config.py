@@ -50,12 +50,12 @@ def config_problems(secrets: dict[str, str] | None, required: tuple[str, ...]) -
     """Names of required settings that are missing or unusable."""
     values = secrets or {}
     problems = [name for name in required if not values.get(name)]
-    if MAGIC_LINK_SECRET in required and values.get(MAGIC_LINK_SECRET):
-        if len(values[MAGIC_LINK_SECRET]) < MIN_SECRET_LENGTH:
-            problems.append(f"{MAGIC_LINK_SECRET} (shorter than {MIN_SECRET_LENGTH} characters)")
-    if REDIRECT_URI in required and values.get(REDIRECT_URI):
-        if _origin(values[REDIRECT_URI]) is None:
-            problems.append(f"{REDIRECT_URI} (must be an absolute https URL)")
+    secret = values.get(MAGIC_LINK_SECRET) if MAGIC_LINK_SECRET in required else None
+    if secret and len(secret) < MIN_SECRET_LENGTH:
+        problems.append(f"{MAGIC_LINK_SECRET} (shorter than {MIN_SECRET_LENGTH} characters)")
+    redirect = values.get(REDIRECT_URI) if REDIRECT_URI in required else None
+    if redirect and _origin(redirect) is None:
+        problems.append(f"{REDIRECT_URI} (must be an absolute https URL)")
     return problems
 
 

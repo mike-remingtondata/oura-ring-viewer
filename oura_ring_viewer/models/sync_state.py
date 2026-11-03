@@ -2,9 +2,8 @@
 
 # mypy: disable-error-code="var-annotated"
 
-from django.db.models import BooleanField, CharField, DateTimeField, UniqueConstraint
-
 from canvas_sdk.v1.data.base import CustomModel
+from django.db.models import BooleanField, CharField, DateTimeField, UniqueConstraint
 
 
 class OuraSyncState(CustomModel):

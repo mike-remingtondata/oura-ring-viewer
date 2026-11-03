@@ -2,10 +2,14 @@
 
 import datetime as dt
 
-from oura_ring_viewer.services.links import link_expired, link_expires_at, live_link_nonce
+from oura_ring_viewer.services.links import (
+    link_expired,
+    link_expires_at,
+    live_link_nonce,
+)
 from oura_ring_viewer.services.storage import upsert_sync_state
 
-NOW = dt.datetime(2026, 11, 2, 18, 0, tzinfo=dt.timezone.utc)
+NOW = dt.datetime(2026, 11, 2, 18, 0, tzinfo=dt.UTC)
 
 
 def _state(**fields: object) -> object:

@@ -10,8 +10,8 @@ days on either side of it.
 """
 
 import datetime as dt
-
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from oura_ring_viewer.models import OuraSyncState
 from oura_ring_viewer.services.fetch import RECONNECT_ERRORS
@@ -85,7 +85,7 @@ def build_payload(
     fetch_error: str = "",
 ) -> dict[str, Any]:
     """Shape everything the chart needs from in-memory rows and status."""
-    start_day, end_day = window(range_days, today)
+    start_day, _ = window(range_days, today)
     days = [start_day + dt.timedelta(days=i) for i in range(range_days)]
     index = {day: i for i, day in enumerate(days)}
 

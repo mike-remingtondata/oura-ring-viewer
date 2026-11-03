@@ -27,7 +27,11 @@ from canvas_sdk.templates import render_to_string
 from logger import log
 
 from oura_ring_viewer.services import magic_link
-from oura_ring_viewer.services.chart_data import STATUS_CONNECTED, STATUS_EXPIRED, connection_status
+from oura_ring_viewer.services.chart_data import (
+    STATUS_CONNECTED,
+    STATUS_EXPIRED,
+    connection_status,
+)
 from oura_ring_viewer.services.config import (
     MAGIC_LINK_SECRET,
     OAUTH_SECRETS,
@@ -46,7 +50,7 @@ from oura_ring_viewer.services.storage import (
 
 
 def _now() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.UTC)
 
 
 class OuraPortalAPI(PatientSessionAuthMixin, SimpleAPI):

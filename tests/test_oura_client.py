@@ -96,7 +96,7 @@ class TestTokenRequests:
         assert (tokens.access_token, tokens.refresh_token) == ("AT", "RT")
         assert tokens.expires_in == 86_400
         assert tokens.scope == "daily spo2"
-        assert tokens.expires_at > dt.datetime.now(dt.timezone.utc)
+        assert tokens.expires_at > dt.datetime.now(dt.UTC)
         assert http.post.call_args.args[0] == "/oauth/token"
         body = http.post.call_args.kwargs["data"]
         assert body["grant_type"] == "authorization_code"

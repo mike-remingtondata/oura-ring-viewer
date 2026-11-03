@@ -23,8 +23,6 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any
 
-from pydantic import ValidationError
-
 from canvas_sdk.effects import Effect
 from canvas_sdk.effects.note.message import Message
 from canvas_sdk.effects.simple_api import HTMLResponse, JSONResponse, Response
@@ -33,6 +31,7 @@ from canvas_sdk.templates import render_to_string
 from canvas_sdk.v1.data import Patient
 from canvas_sdk.v1.data.common import ContactPointState, ContactPointSystem
 from logger import log
+from pydantic import ValidationError
 
 from oura_ring_viewer.services import magic_link
 from oura_ring_viewer.services.access import (
@@ -77,7 +76,7 @@ from oura_ring_viewer.services.storage import (
 
 
 def _now() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.UTC)
 
 
 @dataclass(frozen=True)

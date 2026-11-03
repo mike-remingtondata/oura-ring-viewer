@@ -11,7 +11,6 @@ from http import HTTPStatus
 from typing import Any
 
 import pytest
-
 from canvas_sdk.effects.simple_api import HTMLResponse, JSONResponse
 from canvas_sdk.test_utils.factories import PatientFactory, StaffFactory
 from canvas_sdk.v1.data.care_team import CareTeamMembership, CareTeamMembershipStatus
@@ -238,7 +237,7 @@ class TestGate:
 
     def test_a_refused_disconnect_deletes_nothing(self) -> None:
         staff_id, patient_id = _ids()
-        now = dt.datetime.now(dt.timezone.utc)
+        now = dt.datetime.now(dt.UTC)
         upsert_tokens(patient_id, access_token_ciphertext="AT", refresh_token_ciphertext="RT",
                       expires_at=now, scopes="daily", now=now, is_initial_connection=True)
         effect = _call("disconnect", staff_id, patient_id)[0]

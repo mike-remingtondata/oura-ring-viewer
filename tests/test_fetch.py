@@ -45,7 +45,7 @@ from oura_ring_viewer.services.storage import (
 
 PATIENT = "patient-1"
 OTHER = "patient-2"
-NOW = dt.datetime(2026, 11, 2, 15, 0, tzinfo=dt.timezone.utc)
+NOW = dt.datetime(2026, 11, 2, 15, 0, tzinfo=dt.UTC)
 TODAY = NOW.date()
 START = TODAY - dt.timedelta(days=13)
 DAY = (TODAY - dt.timedelta(days=1)).isoformat()

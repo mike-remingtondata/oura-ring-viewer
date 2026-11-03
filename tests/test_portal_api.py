@@ -7,12 +7,16 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-
 from canvas_sdk.effects.simple_api import HTMLResponse, JSONResponse
 
 from oura_ring_viewer.protocols.portal_api import OuraPortalAPI
 from oura_ring_viewer.services import magic_link
-from oura_ring_viewer.services.storage import get_sync_state, get_tokens, upsert_sync_state, upsert_tokens
+from oura_ring_viewer.services.storage import (
+    get_sync_state,
+    get_tokens,
+    upsert_sync_state,
+    upsert_tokens,
+)
 
 PATIENT = "pat123"
 SECRETS = {
@@ -50,7 +54,7 @@ def _json(effect: Any) -> Any:
 
 
 def _connect(patient_id: str = PATIENT) -> None:
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     upsert_tokens(patient_id, access_token_ciphertext="AT", refresh_token_ciphertext="RT",
                   expires_at=now + dt.timedelta(hours=1), scopes="daily spo2", now=now,
                   is_initial_connection=True)
@@ -118,7 +122,7 @@ class TestStart:
 
     def test_reuses_a_live_staff_link_so_it_keeps_working(self) -> None:
         upsert_sync_state(PATIENT, last_link_nonce="staff-nonce", link_pending=True,
-                          last_link_sent_at=dt.datetime.now(dt.timezone.utc))
+                          last_link_sent_at=dt.datetime.now(dt.UTC))
         location = _api("GET", "/start").start()[0].headers["Location"]
         assert _state_nonce(location) == "staff-nonce"
         state = get_sync_state(PATIENT)
@@ -126,7 +130,7 @@ class TestStart:
 
     def test_an_expired_staff_link_is_not_reused(self) -> None:
         upsert_sync_state(PATIENT, last_link_nonce="old", link_pending=True,
-                          last_link_sent_at=dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=4))
+                          last_link_sent_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=4))
         location = _api("GET", "/start").start()[0].headers["Location"]
         assert _state_nonce(location) != "old"
 
@@ -155,7 +159,10 @@ class TestStopSharing:
 
 @pytest.mark.parametrize("user_type", ["Staff", ""])
 def test_only_patients_are_admitted(user_type: str) -> None:
-    from canvas_sdk.handlers.simple_api.security import InvalidCredentialsError, SessionCredentials
+    from canvas_sdk.handlers.simple_api.security import (
+        InvalidCredentialsError,
+        SessionCredentials,
+    )
 
     handler = _api("GET", "/status", headers={"canvas-logged-in-user-type": user_type,
                                                "canvas-logged-in-user-id": PATIENT})

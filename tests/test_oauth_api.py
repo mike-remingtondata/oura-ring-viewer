@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-
 from canvas_sdk.effects.simple_api import HTMLResponse
 from canvas_sdk.handlers.simple_api.security import Credentials
 

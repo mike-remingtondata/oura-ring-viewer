@@ -12,12 +12,15 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic import ValidationError
-
 from canvas_sdk.effects.simple_api import HTMLResponse, JSONResponse
 from canvas_sdk.test_utils.factories import PatientFactory
-from canvas_sdk.v1.data.common import ContactPointState, ContactPointSystem, ContactPointUse
+from canvas_sdk.v1.data.common import (
+    ContactPointState,
+    ContactPointSystem,
+    ContactPointUse,
+)
 from canvas_sdk.v1.data.patient import PatientContactPoint
+from pydantic import ValidationError
 
 from oura_ring_viewer.models import OuraOAuthToken
 from oura_ring_viewer.protocols.chart_api import OuraChartAPI, _has_messageable_channel
@@ -26,7 +29,11 @@ from oura_ring_viewer.services.fetch import FetchResult
 from oura_ring_viewer.services.normalize import NormalizedDay
 from oura_ring_viewer.services.oauth import RefreshFailed, TokensNotFound
 from oura_ring_viewer.services.oura_client import OuraAPIError, OuraAuthError
-from oura_ring_viewer.services.storage import get_sync_state, upsert_sync_state, upsert_tokens
+from oura_ring_viewer.services.storage import (
+    get_sync_state,
+    upsert_sync_state,
+    upsert_tokens,
+)
 
 PATIENT = "abc123"
 SECRETS = {
@@ -83,9 +90,9 @@ def _connect() -> None:
         PATIENT,
         access_token_ciphertext="AT",
         refresh_token_ciphertext="RT",
-        expires_at=dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1),
+        expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(hours=1),
         scopes="daily spo2",
-        now=dt.datetime.now(dt.timezone.utc),
+        now=dt.datetime.now(dt.UTC),
         is_initial_connection=True,
     )
 
@@ -157,7 +164,7 @@ class TestLiveData:
 
     def test_fetches_the_requested_window_and_shapes_it(self) -> None:
         _connect()
-        today = dt.datetime.now(dt.timezone.utc).date()
+        today = dt.datetime.now(dt.UTC).date()
         result = FetchResult(
             rows=[NormalizedDay(day=today, family="activity", payload={"steps": 5_000})],
             forbidden_endpoints=("daily_spo2",),
@@ -210,9 +217,8 @@ class TestLiveData:
 
     def test_a_programming_error_is_not_swallowed(self) -> None:
         _connect()
-        with patch(FETCH, side_effect=KeyError("x")):
-            with pytest.raises(KeyError):
-                _api("GET", "/data").chart_data()
+        with patch(FETCH, side_effect=KeyError("x")), pytest.raises(KeyError):
+            _api("GET", "/data").chart_data()
 
 
 class TestSendLink:
@@ -246,7 +252,7 @@ class TestSendLink:
 
     def test_reuse_with_no_live_link_issues_a_new_one(self) -> None:
         upsert_sync_state(PATIENT, link_pending=True, last_link_nonce="old",
-                          last_link_sent_at=dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=4))
+                          last_link_sent_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=4))
         body = _json(list(_api("POST", "/send-link", {"channels": "", "reuse": "1"}).send_link())[-1])
         assert body["reused"] is False
         assert get_sync_state(PATIENT).last_link_nonce != "old"  # type: ignore[union-attr]
@@ -358,7 +364,7 @@ class TestMessageableChannel:
 
 def test_disconnect_removes_tokens_and_status() -> None:
     _connect()
-    upsert_sync_state(PATIENT, last_synced_at=dt.datetime.now(dt.timezone.utc))
+    upsert_sync_state(PATIENT, last_synced_at=dt.datetime.now(dt.UTC))
     body = _json(_api("POST", "/disconnect").disconnect()[0])
     assert body == {"disconnected": True}
     assert not OuraOAuthToken.objects.filter(patient_id=PATIENT).exists()
