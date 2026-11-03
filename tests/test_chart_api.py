@@ -19,13 +19,14 @@ from canvas_sdk.test_utils.factories import PatientFactory
 from canvas_sdk.v1.data.common import ContactPointState, ContactPointSystem, ContactPointUse
 from canvas_sdk.v1.data.patient import PatientContactPoint
 
-from oura_ring_viewer.models import OuraDaily, OuraOAuthToken
+from oura_ring_viewer.models import OuraOAuthToken
 from oura_ring_viewer.protocols.chart_api import OuraChartAPI, _has_messageable_channel
 from oura_ring_viewer.services import magic_link
+from oura_ring_viewer.services.fetch import FetchResult
+from oura_ring_viewer.services.normalize import NormalizedDay
 from oura_ring_viewer.services.oauth import RefreshFailed, TokensNotFound
 from oura_ring_viewer.services.oura_client import OuraAPIError, OuraAuthError
-from oura_ring_viewer.services.storage import get_sync_state, upsert_tokens
-from oura_ring_viewer.services.sync import SyncResult
+from oura_ring_viewer.services.storage import get_sync_state, upsert_sync_state, upsert_tokens
 
 PATIENT = "abc123"
 SECRETS = {
@@ -92,7 +93,6 @@ def _connect() -> None:
 ROUTES = [
     ("GET", "/", "chart_shell"),
     ("GET", "/data", "chart_data"),
-    ("POST", "/sync", "sync"),
     ("POST", "/send-link", "send_link"),
     ("POST", "/disconnect", "disconnect"),
 ]
@@ -132,49 +132,86 @@ class TestShellAndData:
         assert body["range"] == "14d"
 
 
-class TestSync:
+FETCH = "oura_ring_viewer.protocols.chart_api.fetch_window"
+
+
+class TestLiveData:
+    def test_a_patient_who_is_not_connected_never_reaches_oura(self) -> None:
+        upsert_sync_state(PATIENT, link_pending=True)
+        with patch(FETCH) as fetch:
+            body = _json(_api("GET", "/data").chart_data()[0])
+        fetch.assert_not_called()
+        assert body["connection_status"] == "link_pending"
+        assert body["has_data"] is False
+
     def test_reports_missing_settings_without_calling_oura(self) -> None:
-        with patch("oura_ring_viewer.protocols.chart_api.sync_patient") as sync:
-            effect = _api("POST", "/sync", secrets={"OURA_ENVIRONMENT": "sandbox"}).sync()[0]
-        sync.assert_not_called()
+        _connect()
+        with patch(FETCH) as fetch:
+            effect = _api("GET", "/data", secrets={"OURA_ENVIRONMENT": "sandbox"}).chart_data()[0]
+        fetch.assert_not_called()
         assert effect.status_code == HTTPStatus.SERVICE_UNAVAILABLE
         assert set(_json(effect)["settings"]) == {
             "OURA_CLIENT_ID", "OURA_CLIENT_SECRET", "OURA_REDIRECT_URI"
         }
 
-    def test_success(self) -> None:
-        result = SyncResult(4, 1, dt.date(2026, 11, 1), ("daily_spo2",))
-        with patch("oura_ring_viewer.protocols.chart_api.sync_patient", return_value=result):
-            body = _json(_api("POST", "/sync", {"range": "7d"}).sync()[0])
-        assert body == {
-            "rows_written": 4,
-            "rows_purged": 1,
-            "latest_day": "2026-11-01",
-            "forbidden_endpoints": ["daily_spo2"],
-        }
+    def test_fetches_the_requested_window_and_shapes_it(self) -> None:
+        _connect()
+        today = dt.datetime.now(dt.timezone.utc).date()
+        result = FetchResult(
+            rows=[NormalizedDay(day=today, family="activity", payload={"steps": 5_000})],
+            forbidden_endpoints=("daily_spo2",),
+        )
+        with patch(FETCH, return_value=result) as fetch:
+            body = _json(_api("GET", "/data", {"range": "7d"}).chart_data()[0])
+
+        kwargs = fetch.call_args.kwargs
+        assert kwargs["patient_id"] == PATIENT
+        assert (kwargs["start_day"], kwargs["end_day"]) == (today - dt.timedelta(days=6), today)
+        assert body["connection_status"] == "connected"
+        assert body["latest"]["steps"] == {"value": 5_000, "day": today.isoformat()}
+        assert body["forbidden_endpoints"] == ["daily_spo2"]
+        assert body["fetch_error"] == ""
 
     @pytest.mark.parametrize(
-        "error, status, code",
+        "error, code",
         [
-            (TokensNotFound("p"), HTTPStatus.CONFLICT, "not_connected"),
-            (RefreshFailed("x"), HTTPStatus.BAD_GATEWAY, "reconnect_required"),
-            (OuraAuthError("x"), HTTPStatus.BAD_GATEWAY, "reconnect_required"),
-            (OuraAPIError(429, "slow down"), HTTPStatus.BAD_GATEWAY, "rate_limited"),
-            (OuraAPIError(500, "down"), HTTPStatus.BAD_GATEWAY, "oura_unavailable"),
+            (RefreshFailed("x"), "reconnect_required"),
+            (OuraAuthError("x"), "reconnect_required"),
+            (OuraAPIError(429, "slow down"), "rate_limited"),
+            (OuraAPIError(500, "down"), "oura_unavailable"),
         ],
     )
-    def test_failures_map_to_staff_facing_codes(
-        self, error: Exception, status: HTTPStatus, code: str
-    ) -> None:
-        with patch("oura_ring_viewer.protocols.chart_api.sync_patient", side_effect=error):
-            effect = _api("POST", "/sync").sync()[0]
-        assert effect.status_code == status
-        assert _json(effect) == {"error": code}
+    def test_failures_still_return_the_view_model(self, error: Exception, code: str) -> None:
+        _connect()
+        with patch(FETCH, side_effect=error):
+            effect = _api("GET", "/data").chart_data()[0]
+        assert effect.status_code == HTTPStatus.OK
+        body = _json(effect)
+        assert body["fetch_error"] == code
+        assert body["has_data"] is False
+
+    def test_reconnect_errors_recorded_by_the_fetch_show_as_expired(self) -> None:
+        _connect()
+
+        def fail(**kwargs: Any) -> Any:
+            upsert_sync_state(PATIENT, last_error="refresh_failed")
+            raise RefreshFailed("x")
+
+        with patch(FETCH, side_effect=fail):
+            body = _json(_api("GET", "/data").chart_data()[0])
+        assert body["connection_status"] == "expired"
+
+    def test_a_disconnect_mid_request_is_not_an_error(self) -> None:
+        _connect()
+        with patch(FETCH, side_effect=TokensNotFound("p")):
+            body = _json(_api("GET", "/data").chart_data()[0])
+        assert body["fetch_error"] == ""
 
     def test_a_programming_error_is_not_swallowed(self) -> None:
-        with patch("oura_ring_viewer.protocols.chart_api.sync_patient", side_effect=KeyError("x")):
+        _connect()
+        with patch(FETCH, side_effect=KeyError("x")):
             with pytest.raises(KeyError):
-                _api("POST", "/sync").sync()
+                _api("GET", "/data").chart_data()
 
 
 class TestSendLink:
@@ -186,7 +223,7 @@ class TestSendLink:
         body = _json(self._send()[-1])
         prefix = "https://acme.canvasmedical.com/plugin-io/api/oura_ring_viewer/connect?token="
         assert body["connection_link"].startswith(prefix)
-        assert body["expires_in_seconds"] == 900
+        assert body["expires_in_seconds"] == 72 * 60 * 60
         assert (body["portal_status"], body["portal_error"]) == ("skipped", "not_selected")
 
         token = body["connection_link"][len(prefix):]
@@ -302,13 +339,10 @@ class TestMessageableChannel:
         assert _has_messageable_channel("no-such-patient") is False
 
 
-def test_disconnect_removes_tokens_and_cached_data() -> None:
+def test_disconnect_removes_tokens_and_status() -> None:
     _connect()
-    OuraDaily.objects.create(
-        patient_id=PATIENT, day=dt.date(2026, 11, 1), family="sleep",
-        payload={"score": 80}, fetched_at=dt.datetime.now(dt.timezone.utc),
-    )
+    upsert_sync_state(PATIENT, last_synced_at=dt.datetime.now(dt.timezone.utc))
     body = _json(_api("POST", "/disconnect").disconnect()[0])
     assert body == {"disconnected": True}
     assert not OuraOAuthToken.objects.filter(patient_id=PATIENT).exists()
-    assert not OuraDaily.objects.filter(patient_id=PATIENT).exists()
+    assert get_sync_state(PATIENT) is None

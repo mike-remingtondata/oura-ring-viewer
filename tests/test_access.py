@@ -16,7 +16,7 @@ from canvas_sdk.effects.simple_api import HTMLResponse, JSONResponse
 from canvas_sdk.test_utils.factories import PatientFactory, StaffFactory
 from canvas_sdk.v1.data.care_team import CareTeamMembership, CareTeamMembershipStatus
 
-from oura_ring_viewer.models import OuraDaily
+from oura_ring_viewer.models import OuraOAuthToken
 from oura_ring_viewer.protocols.chart_api import OuraChartAPI
 from oura_ring_viewer.services.access import (
     DEFAULT_RULE,
@@ -26,7 +26,7 @@ from oura_ring_viewer.services.access import (
     resolve_rule,
     staff_can_view,
 )
-from oura_ring_viewer.services.storage import get_sync_state
+from oura_ring_viewer.services.storage import get_sync_state, upsert_tokens
 
 SECRETS = {
     "OURA_CLIENT_ID": "cid",
@@ -238,8 +238,9 @@ class TestGate:
 
     def test_a_refused_disconnect_deletes_nothing(self) -> None:
         staff_id, patient_id = _ids()
-        OuraDaily.objects.create(patient_id=patient_id, day=dt.date(2026, 11, 1), family="sleep",
-                                 payload={"score": 80}, fetched_at=dt.datetime.now(dt.timezone.utc))
+        now = dt.datetime.now(dt.timezone.utc)
+        upsert_tokens(patient_id, access_token_ciphertext="AT", refresh_token_ciphertext="RT",
+                      expires_at=now, scopes="daily", now=now, is_initial_connection=True)
         effect = _call("disconnect", staff_id, patient_id)[0]
         assert effect.status_code == HTTPStatus.FORBIDDEN
-        assert OuraDaily.objects.filter(patient_id=patient_id).exists()
+        assert OuraOAuthToken.objects.filter(patient_id=patient_id).exists()

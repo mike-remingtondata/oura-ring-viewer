@@ -1,10 +1,9 @@
 """Plugin-wide constants and Oura environment routing.
 
-VERIFY BEFORE FIRST LIVE CALL: the endpoint paths, query parameters and scope
-strings below follow Oura's published API v2 shapes but have not yet been
-checked against a live response from a registered application. Check them
-against https://cloud.ouraring.com/v2/docs once the application exists, and
-correct them here rather than at the call sites.
+The URLs, scope strings, endpoint paths and query parameters below were
+verified on 2026-11-02 against Oura's published OpenAPI specification (1.43)
+and against live sandbox responses. If Oura changes them, correct them here
+rather than at the call sites.
 
 This module has no ``canvas_sdk`` or Django dependency on purpose, so the
 pure normalization layer and its tests can import from it freely.
@@ -13,14 +12,14 @@ pure normalization layer and its tests can import from it freely.
 PLUGIN_NAME: str = "oura_ring_viewer"
 PLUGIN_API_PATH: str = f"/plugin-io/api/{PLUGIN_NAME}"
 
-DAILY_RETENTION_DAYS: int = 90
 DEFAULT_RANGE_DAYS: int = 14
 RANGE_OPTIONS: tuple[int, ...] = (7, 14, 30, 90)
 
-# The patient's connection link is short-lived. The OAuth ``state`` gets a
-# longer window because the patient may need to sign in to Oura, or create an
-# Oura account, on the consent screen before the callback fires.
-MAGIC_LINK_TTL_SECONDS: int = 15 * 60
+# A staff-sent connection link lasts three days. It is often delivered through
+# the patient portal and read later, so a short window mostly produced dead
+# links. It stays single use and bound to one patient. The OAuth ``state``
+# only has to survive Oura's sign-in and consent screens, so an hour is enough.
+MAGIC_LINK_TTL_SECONDS: int = 72 * 60 * 60
 STATE_TTL_SECONDS: int = 60 * 60
 
 # HMAC-SHA256 keys shorter than the hash output weaken the signature, and
@@ -35,10 +34,6 @@ DISCLAIMER: str = (
     "Oura Ring data is consumer wellness data shared by the patient. It is not "
     "a medical device measurement and is not a substitute for clinical vitals."
 )
-
-# Oura returns at most one summary row per day per family, so a 90 day window
-# is 90 points per series. No downsampling is needed at v1 granularity.
-MAX_CHART_POINTS: int = 90
 
 # Guard against a misbehaving ``next_token`` looping forever. A 90 day window
 # of daily summaries fits in a single page, so 20 is generous.
@@ -65,7 +60,7 @@ ENDPOINT_DAILY_READINESS: str = "daily_readiness"
 ENDPOINT_DAILY_ACTIVITY: str = "daily_activity"
 ENDPOINT_DAILY_SPO2: str = "daily_spo2"
 
-# Metric families: one ``OuraDaily`` row per patient per day per family.
+# Metric families: one normalized summary per day per family.
 # Sleep is built from two endpoints (the daily score plus the main sleep
 # period's raw measurements); the others map one endpoint to one family.
 FAMILY_SLEEP: str = "sleep"
@@ -73,15 +68,6 @@ FAMILY_READINESS: str = "readiness"
 FAMILY_ACTIVITY: str = "activity"
 FAMILY_SPO2: str = "spo2"
 FAMILIES: tuple[str, ...] = (FAMILY_SLEEP, FAMILY_READINESS, FAMILY_ACTIVITY, FAMILY_SPO2)
-
-REQUIRED_SECRETS: tuple[str, ...] = (
-    "OURA_CLIENT_ID",
-    "OURA_CLIENT_SECRET",
-    "OURA_REDIRECT_URI",
-    "OURA_ENVIRONMENT",
-    "OURA_MAGIC_LINK_SECRET",
-)
-
 
 def oura_collection_path(environment: str) -> str:
     """Return the usercollection path for the given environment string.

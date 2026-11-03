@@ -6,8 +6,8 @@
 drawer. Staff send the patient a secure connection link, the patient approves
 sharing in Oura, and the chart then shows last night's sleep score, total
 sleep, resting heart rate and HRV, plus readiness, steps and overnight blood
-oxygen, with trends over the last 7, 14, 30 or 90 days. Sync is on demand
-through the Oura API v2; there is no nightly job.
+oxygen, with trends over the last 7, 14, 30 or 90 days. Data is read live
+from the Oura API v2 each time the chart opens and is never stored.
 
 ## Scope and clinical framing
 
@@ -24,35 +24,31 @@ later as an opt-in command.
 
 1. Staff open the Oura Ring tile in the patient's chart and choose **Send via
    patient portal** or **Create link to copy**.
-2. The patient opens the link on their phone within 15 minutes and is sent to
-   Oura's own consent screen, where they sign in and approve sharing.
+2. The patient opens the link on their phone within 3 days and is sent to
+   Oura's own consent screen, where they sign in and approve sharing. Portal
+   messages are often read hours later, which is why the link lasts days
+   rather than minutes; it is still single use and bound to one patient.
 3. Oura returns them to the plugin, which stores the connection and shows a
    confirmation page explaining how to stop sharing.
-4. Staff press **Sync now** to pull data. Opening the chart afterwards reads
-   only stored data and costs no Oura API call.
+4. A chart left open on the patient while the link is out checks back every
+   10 seconds and fills in on its own once the patient approves.
 
 Creating a new link cancels any earlier one, and a link stops working once the
 connection completes.
 
 ## Status
 
-Feature complete for v1. Every module is at 100% line coverage, strict mypy is
-clean, and `canvas validate` loads every handler in the Canvas sandbox.
+Feature complete for v1. Strict mypy is clean, line coverage is at 100%, and
+`canvas validate` loads every handler in the Canvas sandbox.
 
-Verified against Oura itself, without an Oura account:
+Verified against Oura itself:
 
 - Every URL, scope, endpoint path, query parameter and response field the
   plugin uses, checked against Oura's published OpenAPI specification (1.43).
-- The real client and normalizer, run against Oura's live sandbox, which
-  serves 14 days of fake data for any bearer token. Oura's `end_date` is
-  exclusive; the client already requests one day past the window.
-
-Not yet done, because it needs a registered Oura API application:
-
-- A patient completing the connection flow, which needs the application's
-  client ID and secret.
-- Installing on a Canvas instance and running the Canvas Plugin Assistant
-  security and performance reviews.
+- The real client and normalizer, run against Oura's live sandbox. Oura's
+  `end_date` is exclusive; the client already requests one day past the window.
+- A full connection on a Canvas test instance: staff link, Oura consent,
+  callback, and every card populated from Oura's sandbox data.
 
 ## Permissions requested
 
@@ -67,11 +63,11 @@ is stored either.
 ## Partial access
 
 Oura's consent screen lets a patient untick individual scopes. If an endpoint
-returns 403, the sync skips that metric family, keeps the rest, and tells staff
-which data the patient is not sharing. A 401 is different: it means the access
-token expired, so the sync refreshes once and retries.
+returns 403, the fetch skips that metric family, keeps the rest, and tells
+staff which data the patient is not sharing. A 401 is different: it means the
+access token expired, so the fetch refreshes once and retries.
 
-If every endpoint returns 403, nothing was fetched and the sync records an
+If every endpoint returns 403, nothing was fetched and the plugin records an
 `all_forbidden` error. Oura's API documentation confirms the usual cause: a 403
 "usually means the user's subscription to Oura has expired and their data is
 not available", so the chart tells staff the patient's membership may have
@@ -79,18 +75,21 @@ lapsed.
 
 ## Data model
 
-One row per patient per day per metric family (`sleep`, `readiness`,
-`activity`, `spo2`). Oura exposes intraday series, but v1 stores daily
-granularity only, which keeps the table bounded for the Canvas
-database-performance review: a 90 day retention window over four families is at
-most 360 rows per patient. Normalized metrics live in `payload`, and the unique
-constraint on `(patient_id, day, family)` makes re-syncing an overlapping range
-idempotent.
+**No Oura data is stored.** The Oura API Agreement says an aggregator "shall
+not store or cache any User Data or Oura Data", and a plugin that brings Oura
+data into many practices' health records is one. So each chart load fetches
+the selected window from Oura (one call per endpoint, five in all), shapes it
+in memory, and returns it. Nothing from Oura's responses is written anywhere.
 
-Retention is enforced by a daily scheduled task (`OuraRetentionTask`, 03:17 UTC)
-that deletes every patient's rows older than 90 days. Sync also purges, but only
-for the patient being synced; the daily task is what makes the limit hold for a
-patient who is never synced again, for example after revoking access in Oura.
+The plugin keeps two small tables, both per patient:
+
+- `OuraOAuthToken`: the connection itself (access and refresh tokens, expiry,
+  granted scopes).
+- `OuraSyncState`: connection status only. When data was last read, the last
+  error code, and the pending link's nonce. No health values.
+
+Disconnect deletes both rows. Because there is no stored data, there is no
+retention job and nothing to purge.
 
 ## Configuration
 
@@ -150,7 +149,7 @@ refused request changes nothing: no link is issued and nothing is deleted.
   encryption when the platform allows it.
 - The chart page loads no external scripts and writes every value with
   `textContent`, never `innerHTML`.
-- **Disconnect** deletes every row this plugin holds for the patient, but does
+- **Disconnect** deletes both rows this plugin holds for the patient, but does
   not yet revoke the grant at Oura. Patients can revoke it in their Oura
   account, as the confirmation page tells them.
 
@@ -180,7 +179,8 @@ after any change to imports.
 
 The Canvas SDK's pytest plugin creates the plugin's tables in a SQLite test
 database using the same DDL generation as a production install, so storage,
-sync and handler tests run against the real schema. Handler tests render the
+fetch and handler tests run against the real schema. One test checks directly
+that a fetch writes no Oura values to the database. Handler tests render the
 real templates through the SDK's own template engine. The Oura client is mocked
 at the HTTP layer; nothing in the test suite touches the network.
 

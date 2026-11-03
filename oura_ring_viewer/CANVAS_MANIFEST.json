@@ -2,7 +2,7 @@
     "sdk_version": "0.35.0",
     "plugin_version": "0.1.0",
     "name": "oura_ring_viewer",
-    "description": "Brings a patient's Oura Ring sleep, readiness and activity data into the patient chart via a patient-scoped Application. Magic-link OAuth onboarding, on-demand sync over 7/14/30/90 day windows, and a read-only trend view. Presented as patient-generated wellness data, not clinical vitals.",
+    "description": "Shows a patient's Oura Ring sleep, readiness, activity and blood oxygen summaries in the patient chart, fetched live from Oura when the chart is opened and never stored. Magic-link OAuth onboarding and a read-only trend view. Presented as patient-generated wellness data, not clinical vitals.",
     "components": {
         "applications": [
             {
@@ -26,15 +26,6 @@
             {
                 "class": "oura_ring_viewer.protocols.oauth_api:OuraOAuthAPI",
                 "description": "Patient-facing OAuth bridge (JWT-authenticated): /connect and /callback handlers for the Oura hosted login.",
-                "data_access": {
-                    "event": "",
-                    "read": [],
-                    "write": []
-                }
-            },
-            {
-                "class": "oura_ring_viewer.cron.retention:OuraRetentionTask",
-                "description": "Runs daily: deletes Oura daily summaries older than 90 days for every patient, so retention holds even when a patient's data is no longer synced.",
                 "data_access": {
                     "event": "",
                     "read": [],

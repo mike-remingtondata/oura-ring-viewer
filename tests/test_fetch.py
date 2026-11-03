@@ -1,6 +1,7 @@
-"""Tests for the sync engine against the plugin's real SQLite tables.
+"""Tests for the live fetch against the plugin's real SQLite tables.
 
 The Oura client is mocked; storage, OAuth rotation and normalization are real.
+The central property: nothing fetched from Oura is ever written to the database.
 """
 
 import datetime as dt
@@ -10,8 +11,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from oura_ring_viewer.models import OuraDaily, OuraOAuthToken
+from oura_ring_viewer.models import OuraOAuthToken, OuraSyncState
 from oura_ring_viewer.services.crypto import TokenCipher
+from oura_ring_viewer.services.fetch import (
+    ERROR_ALL_FORBIDDEN,
+    ERROR_API,
+    ERROR_AUTH_FAILED,
+    ERROR_NOT_CONNECTED,
+    ERROR_REFRESH_FAILED,
+    FetchResult,
+    fetch_window,
+)
 from oura_ring_viewer.services.oauth import RefreshFailed, TokensNotFound
 from oura_ring_viewer.services.oura_client import (
     OuraAPIError,
@@ -21,7 +31,6 @@ from oura_ring_viewer.services.oura_client import (
     TokenSet,
 )
 from oura_ring_viewer.services.settings import (
-    DAILY_RETENTION_DAYS,
     FAMILY_ACTIVITY,
     FAMILY_READINESS,
     FAMILY_SLEEP,
@@ -29,23 +38,16 @@ from oura_ring_viewer.services.settings import (
 )
 from oura_ring_viewer.services.storage import (
     delete_all_for_patient,
-    fetch_daily_window,
     get_sync_state,
+    upsert_sync_state,
     upsert_tokens,
-)
-from oura_ring_viewer.services.sync import (
-    ERROR_ALL_FORBIDDEN,
-    ERROR_API,
-    ERROR_AUTH_FAILED,
-    ERROR_NOT_CONNECTED,
-    ERROR_REFRESH_FAILED,
-    sync_patient,
 )
 
 PATIENT = "patient-1"
 OTHER = "patient-2"
 NOW = dt.datetime(2026, 11, 2, 15, 0, tzinfo=dt.timezone.utc)
 TODAY = NOW.date()
+START = TODAY - dt.timedelta(days=13)
 DAY = (TODAY - dt.timedelta(days=1)).isoformat()
 
 
@@ -86,6 +88,13 @@ def _client(
     return client
 
 
+def _raise(exc: Exception) -> Callable[..., Any]:
+    def fetch(*args: Any) -> Any:
+        raise exc
+
+    return fetch
+
+
 def _connect(patient_id: str = PATIENT, access: str = "AT", refresh: str = "RT") -> None:
     upsert_tokens(
         patient_id,
@@ -98,54 +107,62 @@ def _connect(patient_id: str = PATIENT, access: str = "AT", refresh: str = "RT")
     )
 
 
-def _sync(client: MagicMock, *, patient_id: str = PATIENT, range_days: int = 14) -> Any:
-    return sync_patient(
-        patient_id=patient_id, range_days=range_days, client=client, cipher=TokenCipher(), now=NOW
+def _fetch(client: MagicMock, *, patient_id: str = PATIENT, start: dt.date = START) -> FetchResult:
+    return fetch_window(
+        patient_id=patient_id, start_day=start, end_day=TODAY,
+        client=client, cipher=TokenCipher(), now=NOW,
     )
 
 
-def _families(patient_id: str = PATIENT) -> set[str]:
-    return set(OuraDaily.objects.filter(patient_id=patient_id).values_list("family", flat=True))
+def _families(result: FetchResult) -> set[str]:
+    return {row.family for row in result.rows}
+
+
+def _plugin_row_counts() -> dict[str, int]:
+    """Row counts for every table this plugin owns (``models/__init__.py``)."""
+    return {m.__name__: m.objects.count() for m in (OuraOAuthToken, OuraSyncState)}
 
 
 class TestHappyPath:
-    def test_writes_every_family_and_clears_errors(self) -> None:
+    def test_returns_every_family_and_clears_errors(self) -> None:
         _connect()
-        result = _sync(_client())
+        upsert_sync_state(PATIENT, last_error=ERROR_API, last_error_at=NOW)
+        result = _fetch(_client())
 
-        assert result.rows_written == 4
         assert result.forbidden_endpoints == ()
-        assert result.latest_day == TODAY - dt.timedelta(days=1)
-        assert _families() == {FAMILY_SLEEP, FAMILY_READINESS, FAMILY_ACTIVITY, FAMILY_SPO2}
-
-        sleep = OuraDaily.objects.get(patient_id=PATIENT, family=FAMILY_SLEEP)
+        assert _families(result) == {FAMILY_SLEEP, FAMILY_READINESS, FAMILY_ACTIVITY, FAMILY_SPO2}
+        sleep = next(r for r in result.rows if r.family == FAMILY_SLEEP)
+        assert sleep.day == TODAY - dt.timedelta(days=1)
         assert sleep.payload["score"] == 80
         assert sleep.payload["average_hrv_ms"] == 45
 
         state = get_sync_state(PATIENT)
         assert state is not None
         assert state.last_synced_at == NOW
-        assert state.last_day_synced == TODAY - dt.timedelta(days=1)
         assert state.last_error == ""
+        assert state.last_error_at is None
 
-    def test_requests_the_full_range_ending_today(self) -> None:
+    def test_requests_exactly_the_window(self) -> None:
         _connect()
         client = _client()
-        _sync(client, range_days=30)
-        _, _, start, end = client.fetch_collection.call_args.args
-        assert (start, end) == (TODAY - dt.timedelta(days=30), TODAY)
+        _fetch(client)
+        assert client.fetch_collection.call_count == 5
+        for call in client.fetch_collection.call_args_list:
+            assert call.args[2:] == (START, TODAY)
 
-    def test_resync_is_idempotent_and_updates_values(self) -> None:
+    def test_nothing_fetched_is_stored(self) -> None:
         _connect()
-        _sync(_client(_fixtures(score=80)))
-        _sync(_client(_fixtures(score=85)))
-        assert OuraDaily.objects.filter(patient_id=PATIENT).count() == 4
-        sleep = OuraDaily.objects.get(patient_id=PATIENT, family=FAMILY_SLEEP)
-        assert sleep.payload["score"] == 85
+        upsert_sync_state(PATIENT, link_pending=False)
+        before = _plugin_row_counts()
+        _fetch(_client())
+        assert _plugin_row_counts() == before
+        state = OuraSyncState.objects.get(patient_id=PATIENT)
+        stored_text = " ".join(str(getattr(state, f.name)) for f in state._meta.fields)
+        assert "9000" not in stored_text and "97.0" not in stored_text
 
     def test_rows_outside_the_window_are_dropped(self) -> None:
         _connect()
-        too_old = (TODAY - dt.timedelta(days=60)).isoformat()
+        too_old = (START - dt.timedelta(days=1)).isoformat()
         tomorrow = (TODAY + dt.timedelta(days=1)).isoformat()
         fixtures = {
             "daily_readiness": [
@@ -154,22 +171,8 @@ class TestHappyPath:
                 {"day": tomorrow, "score": 90},
             ]
         }
-        _sync(_client(fixtures))
-        days = list(OuraDaily.objects.filter(patient_id=PATIENT).values_list("day", flat=True))
-        assert days == [TODAY - dt.timedelta(days=1)]
-
-    def test_purges_rows_past_retention_without_touching_other_patients(self) -> None:
-        _connect()
-        ancient = TODAY - dt.timedelta(days=DAILY_RETENTION_DAYS + 5)
-        for patient in (PATIENT, OTHER):
-            OuraDaily.objects.create(
-                patient_id=patient, day=ancient, family=FAMILY_SLEEP,
-                payload={"score": 1}, fetched_at=NOW,
-            )
-        result = _sync(_client())
-        assert result.rows_purged == 1
-        assert not OuraDaily.objects.filter(patient_id=PATIENT, day=ancient).exists()
-        assert OuraDaily.objects.filter(patient_id=OTHER, day=ancient).exists()
+        result = _fetch(_client(fixtures))
+        assert [r.day for r in result.rows] == [TODAY - dt.timedelta(days=1)]
 
 
 class TestTokenRotation:
@@ -186,35 +189,34 @@ class TestTokenRotation:
 
         client = _client(fetch=fetch)
         client.refresh.return_value = TokenSet("AT2", "RT2", 86_400, "bearer", "daily spo2")
-        result = _sync(client)
+        result = _fetch(client)
 
         client.refresh.assert_called_once_with("RT1")
         assert seen == ["AT1"] + ["AT2"] * 5
-        assert result.rows_written == 4
+        assert len(result.rows) == 4
         stored = OuraOAuthToken.objects.get(patient_id=PATIENT)
         assert (stored.access_token, stored.refresh_token) == ("AT2", "RT2")
         assert stored.last_refresh_at == NOW
 
     def test_failed_refresh_records_error_and_keeps_old_tokens(self) -> None:
         _connect(access="AT1", refresh="RT1")
-        client = _client(fetch=lambda *a: (_ for _ in ()).throw(OuraAuthError("expired")))
+        client = _client(fetch=_raise(OuraAuthError("expired")))
         client.refresh.side_effect = OuraAuthError("invalid_grant")
 
         with pytest.raises(RefreshFailed):
-            _sync(client)
+            _fetch(client)
 
         state = get_sync_state(PATIENT)
         assert state is not None and state.last_error == ERROR_REFRESH_FAILED
         assert OuraOAuthToken.objects.get(patient_id=PATIENT).refresh_token == "RT1"
-        assert not OuraDaily.objects.filter(patient_id=PATIENT).exists()
 
     def test_still_rejected_after_refresh_is_an_auth_failure(self) -> None:
         _connect()
-        client = _client(fetch=lambda *a: (_ for _ in ()).throw(OuraAuthError("nope")))
+        client = _client(fetch=_raise(OuraAuthError("nope")))
         client.refresh.return_value = TokenSet("AT2", "RT2", 86_400, "bearer")
 
         with pytest.raises(OuraAuthError):
-            _sync(client)
+            _fetch(client)
         state = get_sync_state(PATIENT)
         assert state is not None and state.last_error == ERROR_AUTH_FAILED
 
@@ -230,78 +232,68 @@ class TestPartialAccess:
             return data[endpoint]
 
         client = _client(fetch=fetch)
-        result = _sync(client)
+        result = _fetch(client)
 
         assert result.forbidden_endpoints == ("daily_spo2",)
-        assert _families() == {FAMILY_SLEEP, FAMILY_READINESS, FAMILY_ACTIVITY}
+        assert _families(result) == {FAMILY_SLEEP, FAMILY_READINESS, FAMILY_ACTIVITY}
         client.refresh.assert_not_called()
         state = get_sync_state(PATIENT)
         assert state is not None and state.last_error == ""
 
-    def test_everything_forbidden_records_an_error_and_writes_nothing(self) -> None:
+    def test_sleep_survives_losing_one_of_its_two_endpoints(self) -> None:
         _connect()
-        client = _client(fetch=lambda *a: (_ for _ in ()).throw(OuraForbiddenError(403, "")))
-        result = _sync(client)
+        data = _fixtures()
 
-        assert result.rows_written == 0
+        def fetch(access_token: str, endpoint: str, start: dt.date, end: dt.date) -> Any:
+            if endpoint == "sleep":
+                raise OuraForbiddenError(403, "")
+            return data[endpoint]
+
+        result = _fetch(_client(fetch=fetch))
+        sleep = next(r for r in result.rows if r.family == FAMILY_SLEEP)
+        assert sleep.payload["score"] == 80
+
+    def test_everything_forbidden_records_an_error_and_returns_nothing(self) -> None:
+        _connect()
+        client = _client(fetch=_raise(OuraForbiddenError(403, "")))
+        result = _fetch(client)
+
+        assert result.rows == []
         assert len(result.forbidden_endpoints) == 5
         client.refresh.assert_not_called()
         state = get_sync_state(PATIENT)
         assert state is not None and state.last_error == ERROR_ALL_FORBIDDEN
+        assert state.last_synced_at is None
 
 
 class TestFailures:
     def test_never_connected(self) -> None:
+        client = _client()
         with pytest.raises(TokensNotFound):
-            _sync(_client())
+            _fetch(client)
+        client.fetch_collection.assert_not_called()
         state = get_sync_state(PATIENT)
         assert state is not None and state.last_error == ERROR_NOT_CONNECTED
 
     def test_server_error_records_api_error(self) -> None:
         _connect()
-        client = _client(fetch=lambda *a: (_ for _ in ()).throw(OuraAPIError(500, "down")))
         with pytest.raises(OuraAPIError):
-            _sync(client)
+            _fetch(_client(fetch=_raise(OuraAPIError(500, "down"))))
         state = get_sync_state(PATIENT)
         assert state is not None and state.last_error == ERROR_API
         assert state.last_error_at == NOW
 
 
-class TestChartReads:
-    def test_window_is_inclusive_ordered_and_patient_scoped(self) -> None:
-        for offset in (0, 3, 6):
-            for family in (FAMILY_SPO2, FAMILY_SLEEP):
-                OuraDaily.objects.create(
-                    patient_id=PATIENT, day=TODAY - dt.timedelta(days=offset),
-                    family=family, payload={}, fetched_at=NOW,
-                )
-        OuraDaily.objects.create(
-            patient_id=OTHER, day=TODAY, family=FAMILY_SLEEP, payload={}, fetched_at=NOW
-        )
-
-        rows = fetch_daily_window(
-            PATIENT, start_day=TODAY - dt.timedelta(days=3), end_day=TODAY
-        )
-
-        assert [(r.day, r.family) for r in rows] == [
-            (TODAY - dt.timedelta(days=3), FAMILY_SLEEP),
-            (TODAY - dt.timedelta(days=3), FAMILY_SPO2),
-            (TODAY, FAMILY_SLEEP),
-            (TODAY, FAMILY_SPO2),
-        ]
-
-
 class TestDisconnect:
-    def test_removes_every_row_for_the_patient_only(self) -> None:
+    def test_removes_tokens_and_status_for_the_patient_only(self) -> None:
         _connect(PATIENT)
         _connect(OTHER)
-        _sync(_client(), patient_id=PATIENT)
-        _sync(_client(), patient_id=OTHER)
+        _fetch(_client(), patient_id=PATIENT)
+        _fetch(_client(), patient_id=OTHER)
 
         delete_all_for_patient(PATIENT)
 
         assert not OuraOAuthToken.objects.filter(patient_id=PATIENT).exists()
         assert get_sync_state(PATIENT) is None
-        assert not OuraDaily.objects.filter(patient_id=PATIENT).exists()
         assert OuraOAuthToken.objects.filter(patient_id=OTHER).exists()
-        assert OuraDaily.objects.filter(patient_id=OTHER).count() == 4
+        assert get_sync_state(OTHER) is not None

@@ -56,7 +56,7 @@
 <div id="notice" class="notice" hidden></div>
 
 <div class="toolbar">
-  <button id="sync" class="primary" type="button" hidden>Sync now</button>
+  <button id="refresh" type="button" hidden>Refresh</button>
   <div class="range" role="group" aria-label="Date range">
     <button type="button" data-range="7">7d</button>
     <button type="button" data-range="14">14d</button>
@@ -69,7 +69,7 @@
 <section id="connect" class="panel" hidden>
   <h2 id="connect-title">Connect this patient's Oura Ring</h2>
   <p id="connect-help">Send the patient a secure link. They open it on their phone, sign in to Oura and
-     approve sharing. The link expires after 15 minutes and stops working once used.</p>
+     approve sharing. The link expires after 3 days and stops working once used.</p>
   <div class="toolbar">
     <button id="send-portal" class="primary" type="button">Send via patient portal</button>
     <button id="send-copy" type="button">Create link to copy</button>
@@ -84,6 +84,7 @@
 </section>
 
 <div id="cards" class="grid" hidden></div>
+<p id="source" class="link-meta" hidden>Read live from Oura each time this panel opens. Not saved to the chart.</p>
 
 <footer id="disclaimer"></footer>
 
@@ -92,7 +93,10 @@
   "use strict";
   var PATIENT_ID = "{{ patient_id }}";
   var API = "{{ api_path }}";
-  var state = { range: 14, data: null, busy: false };
+  var state = { range: 14, data: null, busy: false, poll: null, pollUntil: 0 };
+  // While a link is out, check back so the panel fills in on its own once the
+  // patient approves. Checking a pending patient never calls Oura.
+  var POLL_MS = 10000, POLL_FOR_MS = 30 * 60 * 1000;
 
   var STATUS_LABELS = {
     connected: "Connected", expired: "Reconnect needed",
@@ -102,13 +106,13 @@
     not_connected: "This patient has not connected an Oura Ring yet.",
     reconnect_required: "The patient's Oura connection has expired. Send them a new connection link.",
     rate_limited: "Oura is limiting requests right now. Try again in a few minutes.",
-    oura_unavailable: "Oura did not respond. Showing the last synced data.",
+    oura_unavailable: "Oura did not respond. Try Refresh in a minute.",
     plugin_not_configured: "This plugin is missing settings. Ask your Canvas administrator to finish setup.",
     invalid_patient_id: "This chart could not identify the patient.",
     forbidden: "You do not have access to this patient's Oura data.",
     not_staff: "Oura data is only available to signed-in staff.",
     all_forbidden: "The patient's Oura account is not sharing any data. They may have declined access, or their Oura membership may have lapsed.",
-    api_error: "The last sync with Oura failed. Showing the last synced data.",
+    api_error: "Oura did not respond. Try Refresh in a minute.",
     refresh_failed: "The patient's Oura connection has expired. Send them a new connection link.",
     auth_failed: "The patient's Oura connection has expired. Send them a new connection link."
   };
@@ -181,7 +185,7 @@
 
   function setBusy(busy) {
     state.busy = busy;
-    ["sync", "disconnect", "send-portal", "send-copy"].forEach(function (id) { $(id).disabled = busy; });
+    ["refresh", "disconnect", "send-portal", "send-copy"].forEach(function (id) { $(id).disabled = busy; });
   }
 
   function sparkline(values) {
@@ -247,11 +251,11 @@
     var pill = $("status");
     pill.textContent = STATUS_LABELS[status] || status;
     pill.className = "pill " + status;
-    $("synced").textContent = data.last_synced_at ? "Synced " + ago(data.last_synced_at) : "";
+    var connected = status === "connected";
+    $("synced").textContent = connected && data.last_synced_at ? "Updated " + ago(data.last_synced_at) : "";
     $("disclaimer").textContent = data.disclaimer;
 
-    var connected = status === "connected";
-    $("sync").hidden = !connected;
+    $("refresh").hidden = !connected;
     $("disconnect").hidden = status === "disconnected";
     $("connect").hidden = connected;
     if (status === "expired") {
@@ -262,46 +266,54 @@
       $("connect-title").textContent = "Connect this patient's Oura Ring";
     }
 
-    // A range only means something once there is data to look at.
-    document.querySelector(".range").hidden = !connected && !data.has_data;
+    document.querySelector(".range").hidden = !connected;
     Array.prototype.forEach.call(document.querySelectorAll(".range button"), function (b) {
       b.setAttribute("aria-pressed", String(Number(b.dataset.range) === state.range));
     });
 
-    if (data.last_error && ERRORS[data.last_error]) {
-      notice(ERRORS[data.last_error], status === "expired" ? "error" : "warn");
-    }
-    if (data.has_data) {
-      renderCards(data);
+    $("cards").hidden = !data.has_data;
+    $("source").hidden = !data.has_data;
+    if (data.has_data) renderCards(data);
+
+    var problem = data.fetch_error || data.last_error;
+    if (problem && ERRORS[problem]) {
+      notice(ERRORS[problem], status === "expired" ? "error" : "warn");
+    } else if (data.forbidden_endpoints && data.forbidden_endpoints.length) {
+      var names = data.forbidden_endpoints.map(function (e) { return ENDPOINT_LABELS[e] || e; });
+      notice("The patient is not sharing: " + names.join(", ") + ".", "warn");
+    } else if (connected && !data.has_data) {
+      notice("Oura has no data for this patient in this range.");
     } else {
-      $("cards").hidden = true;
-      if (connected && !data.last_error) notice("No Oura data in this range yet. Use Sync now to fetch it.");
+      notice("");
     }
+    schedulePoll(status);
   }
 
-  function load() {
+  function schedulePoll(status) {
+    clearTimeout(state.poll);
+    state.poll = null;
+    if (status !== "link_pending") { state.pollUntil = 0; return; }
+    if (!state.pollUntil) state.pollUntil = Date.now() + POLL_FOR_MS;
+    if (Date.now() > state.pollUntil) return;
+    state.poll = setTimeout(function () {
+      if (document.hidden || state.busy) { schedulePoll(status); return; }
+      load(true);
+    }, POLL_MS);
+  }
+
+  // A connected patient's data is read from Oura on every load, which takes a
+  // moment, so say so. Background polls stay quiet.
+  function load(quiet) {
+    if (!quiet) {
+      notice("Loading from Oura…");
+      $("refresh").disabled = true;
+    }
     return call("GET", "/data", { range: state.range + "d" }).then(function (r) {
       if (!r.ok) { notice(ERRORS[r.body.error] || "Could not load Oura data.", "error"); return; }
-      notice("");
       render(r.body);
-    }).catch(function () { notice("Could not reach the plugin. Check your connection.", "error"); });
-  }
-
-  function sync() {
-    setBusy(true);
-    notice("Syncing with Oura…");
-    call("POST", "/sync", { range: state.range + "d" }).then(function (r) {
-      return load().then(function () {
-        if (!r.ok) {
-          notice(ERRORS[r.body.error] || "Sync failed.", "error");
-        } else if (r.body.forbidden_endpoints && r.body.forbidden_endpoints.length) {
-          var names = r.body.forbidden_endpoints.map(function (e) { return ENDPOINT_LABELS[e] || e; });
-          notice("Synced. The patient is not sharing: " + names.join(", ") + ".", "warn");
-        }
-      });
     }).catch(function () {
       notice("Could not reach the plugin. Check your connection.", "error");
-    }).then(function () { setBusy(false); });
+    }).then(function () { $("refresh").disabled = state.busy; });
   }
 
   function sendLink(viaPortal) {
@@ -314,11 +326,14 @@
       }
       $("link").value = r.body.connection_link;
       $("link-box").hidden = false;
-      var meta = "Expires in " + Math.round(r.body.expires_in_seconds / 60) + " minutes. Creating a new link cancels this one.";
+      var hours = Math.round(r.body.expires_in_seconds / 3600);
+      var meta = "Expires in " + (hours >= 48 ? Math.round(hours / 24) + " days" : hours + " hours") +
+                 ". Creating a new link cancels this one.";
       $("link-meta").textContent = meta;
-      // Reload first: a successful load clears notices, so the outcome
+      // Reload first: a successful load replaces the notice, so the outcome
       // message has to be shown after it, not before.
-      return load().then(function () {
+      state.pollUntil = 0;
+      return load(true).then(function () {
         if (r.body.portal_status === "sent") {
           notice("Link sent to the patient's portal.");
         } else if (viaPortal) {
@@ -334,20 +349,20 @@
   }
 
   function disconnect() {
-    if (!window.confirm("Disconnect this patient's Oura Ring? Stored Oura data for this patient will be deleted.")) return;
+    if (!window.confirm("Disconnect this patient's Oura Ring? The care team will no longer see their Oura data.")) return;
     setBusy(true);
     call("POST", "/disconnect").then(function (r) {
       if (!r.ok) { notice("Could not disconnect.", "error"); return; }
       $("link-box").hidden = true;
-      return load().then(function () {
-        notice("Disconnected. Stored Oura data for this patient was deleted.");
+      return load(true).then(function () {
+        notice("Disconnected. The patient can reconnect with a new link.");
       });
     }).catch(function () {
       notice("Could not reach the plugin. Check your connection.", "error");
     }).then(function () { setBusy(false); });
   }
 
-  $("sync").addEventListener("click", sync);
+  $("refresh").addEventListener("click", function () { load(); });
   $("disconnect").addEventListener("click", disconnect);
   $("send-portal").addEventListener("click", function () { sendLink(true); });
   $("send-copy").addEventListener("click", function () { sendLink(false); });

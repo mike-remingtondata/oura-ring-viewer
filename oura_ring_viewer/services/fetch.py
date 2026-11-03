@@ -1,13 +1,17 @@
-"""On-demand sync: pull Oura summaries, normalize, persist, purge.
+"""Live fetch: read a window of Oura summaries and normalize them in memory.
 
-One sync makes one call per endpoint (plus pagination, which a 90 day window
-of daily summaries does not need). Tokens are refreshed at most once per sync:
-after a rotation, every later endpoint reuses the new access token.
+Nothing fetched here is stored. Under the Oura API Agreement (§3(m)) an
+Aggregator "shall not store or cache any User Data or Oura Data", and this
+plugin makes Oura data available inside each practice's health record, so it
+fetches on demand and only ever holds the result for the length of a request.
+The only things persisted are the connection (tokens) and connection status.
 
-A 403 on an endpoint skips that family rather than failing the sync. See
+One fetch makes one call per endpoint. Tokens are refreshed at most once per
+fetch: after a rotation, every later endpoint reuses the new access token.
+
+A 403 on an endpoint skips that family rather than failing the fetch. See
 ``OuraForbiddenError`` for why a patient can legitimately be missing a family.
-If every endpoint is forbidden, nothing useful was fetched, and that is
-recorded as an error.
+If every endpoint is forbidden, nothing is shown and that is recorded.
 """
 
 import datetime as dt
@@ -42,7 +46,7 @@ from oura_ring_viewer.services.settings import (
     ENDPOINT_DAILY_SPO2,
     ENDPOINT_SLEEP_PERIODS,
 )
-from oura_ring_viewer.services.storage import purge_old_daily, store_daily, upsert_sync_state
+from oura_ring_viewer.services.storage import upsert_sync_state
 
 # Short machine-readable codes written to ``OuraSyncState.last_error``. The
 # chart maps these to staff-facing wording; they never carry response bodies.
@@ -51,6 +55,9 @@ ERROR_REFRESH_FAILED = "refresh_failed"
 ERROR_AUTH_FAILED = "auth_failed"
 ERROR_ALL_FORBIDDEN = "all_forbidden"
 ERROR_API = "api_error"
+
+# Errors that mean the stored tokens are dead and the patient must reconnect.
+RECONNECT_ERRORS = frozenset({ERROR_REFRESH_FAILED, ERROR_AUTH_FAILED})
 
 _ENDPOINTS: tuple[str, ...] = (
     ENDPOINT_DAILY_SLEEP,
@@ -62,26 +69,26 @@ _ENDPOINTS: tuple[str, ...] = (
 
 
 @dataclass
-class SyncResult:
-    """Outcome of a single sync."""
+class FetchResult:
+    """Normalized rows for the requested window, held in memory only."""
 
-    rows_written: int
-    rows_purged: int
-    latest_day: dt.date | None
+    rows: list[NormalizedDay]
     forbidden_endpoints: tuple[str, ...] = field(default_factory=tuple)
 
 
-def sync_patient(
+def fetch_window(
     *,
     patient_id: str,
-    range_days: int,
+    start_day: dt.date,
+    end_day: dt.date,
     client: OuraClient,
     cipher: TokenCipher,
     now: dt.datetime,
-) -> SyncResult:
-    """Run a manual "Sync now" for one patient over the last ``range_days``.
+) -> FetchResult:
+    """Fetch and normalize ``start_day..end_day`` for one patient.
 
-    On failure the sync-state row records a short error code and the original
+    On success, records the fetch time and clears any error. On failure, the
+    connection-status row records a short error code and the original
     exception is re-raised for the API handler to turn into a response.
     """
     try:
@@ -89,9 +96,6 @@ def sync_patient(
     except TokensNotFound:
         _record_error(patient_id, ERROR_NOT_CONNECTED, now)
         raise
-
-    today = now.date()
-    start_day = today - dt.timedelta(days=range_days)
 
     fetched: dict[str, list[dict[str, Any]]] = {}
     forbidden: list[str] = []
@@ -105,7 +109,7 @@ def sync_patient(
                     tokens=tokens,
                     endpoint=endpoint,
                     start_day=start_day,
-                    end_day=today,
+                    end_day=end_day,
                     now=now,
                 )
             except OuraForbiddenError:
@@ -125,29 +129,11 @@ def sync_patient(
 
     if not fetched:
         _record_error(patient_id, ERROR_ALL_FORBIDDEN, now)
-        return SyncResult(
-            rows_written=0,
-            rows_purged=0,
-            latest_day=None,
-            forbidden_endpoints=tuple(forbidden),
-        )
+        return FetchResult(rows=[], forbidden_endpoints=tuple(forbidden))
 
-    rows = _in_window(_normalize_all(fetched), start_day, today)
-    written = store_daily(patient_id, rows, now=now)
-    purged = purge_old_daily(patient_id, today=today)
-    latest_day = max((row.day for row in rows), default=None)
-
-    state: dict[str, Any] = {"last_synced_at": now, "last_error": "", "last_error_at": None}
-    if latest_day is not None:
-        state["last_day_synced"] = latest_day
-    upsert_sync_state(patient_id, **state)
-
-    return SyncResult(
-        rows_written=written,
-        rows_purged=purged,
-        latest_day=latest_day,
-        forbidden_endpoints=tuple(forbidden),
-    )
+    rows = [row for row in _normalize_all(fetched) if start_day <= row.day <= end_day]
+    upsert_sync_state(patient_id, last_synced_at=now, last_error="", last_error_at=None)
+    return FetchResult(rows=rows, forbidden_endpoints=tuple(forbidden))
 
 
 def _normalize_all(fetched: dict[str, list[dict[str, Any]]]) -> list[NormalizedDay]:
@@ -161,18 +147,6 @@ def _normalize_all(fetched: dict[str, list[dict[str, Any]]]) -> list[NormalizedD
     rows += normalize_activity(fetched.get(ENDPOINT_DAILY_ACTIVITY, []))
     rows += normalize_spo2(fetched.get(ENDPOINT_DAILY_SPO2, []))
     return rows
-
-
-def _in_window(
-    rows: list[NormalizedDay], start_day: dt.date, end_day: dt.date
-) -> list[NormalizedDay]:
-    """Drop rows outside the requested window.
-
-    The client widens ``end_date`` by a day to be safe about Oura's bound, and
-    a ring owner ahead of UTC can already have a "tomorrow" summary, so rows
-    are filtered here rather than trusted.
-    """
-    return [row for row in rows if start_day <= row.day <= end_day]
 
 
 def _fetch_with_refresh(
@@ -189,7 +163,7 @@ def _fetch_with_refresh(
     """Fetch one endpoint, refreshing once on 401.
 
     Returns the records and the possibly-rotated tokens so later endpoints in
-    the same sync reuse the new access token instead of refreshing again.
+    the same fetch reuse the new access token instead of refreshing again.
     """
     try:
         return client.fetch_collection(tokens.access_token, endpoint, start_day, end_day), tokens

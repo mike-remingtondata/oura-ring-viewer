@@ -21,10 +21,10 @@ ENVIRONMENT = "OURA_ENVIRONMENT"
 MAGIC_LINK_SECRET = "OURA_MAGIC_LINK_SECRET"
 
 # What each operation actually needs, so a missing value is reported only where
-# it matters. Syncing never signs anything; sending a link never calls Oura.
-SYNC_SECRETS: tuple[str, ...] = (CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, ENVIRONMENT)
+# it matters. Fetching never signs anything; sending a link never calls Oura.
+FETCH_SECRETS: tuple[str, ...] = (CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, ENVIRONMENT)
 LINK_SECRETS: tuple[str, ...] = (MAGIC_LINK_SECRET, REDIRECT_URI)
-OAUTH_SECRETS: tuple[str, ...] = SYNC_SECRETS + (MAGIC_LINK_SECRET,)
+OAUTH_SECRETS: tuple[str, ...] = FETCH_SECRETS + (MAGIC_LINK_SECRET,)
 
 _LOCAL_HOSTS = ("localhost", "127.0.0.1")
 

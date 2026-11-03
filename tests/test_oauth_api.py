@@ -109,7 +109,7 @@ class TestConnect:
 
     def test_expired_link(self) -> None:
         upsert_sync_state(PATIENT, last_link_nonce="nonce-1", link_pending=True)
-        old = magic_link.mint_link(PATIENT, "nonce-1", SECRET, now=int(time.time()) - 3600)
+        old = magic_link.mint_link(PATIENT, "nonce-1", SECRET, now=int(time.time()) - 73 * 3600)
         assert _api("/connect", {"token": old}).connect()[0].status_code == HTTPStatus.UNAUTHORIZED
 
     def test_a_state_token_is_not_a_link(self) -> None:

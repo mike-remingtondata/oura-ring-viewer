@@ -7,7 +7,7 @@ import pytest
 from oura_ring_viewer.services.config import (
     LINK_SECRETS,
     OAUTH_SECRETS,
-    SYNC_SECRETS,
+    FETCH_SECRETS,
     build_client,
     clean_patient_id,
     config_problems,
@@ -38,18 +38,18 @@ class TestPatientId:
 
 
 class TestConfigProblems:
-    @pytest.mark.parametrize("required", [SYNC_SECRETS, LINK_SECRETS, OAUTH_SECRETS])
+    @pytest.mark.parametrize("required", [FETCH_SECRETS, LINK_SECRETS, OAUTH_SECRETS])
     def test_complete_configuration_has_no_problems(self, required: tuple[str, ...]) -> None:
         assert config_problems(GOOD, required) == []
 
     def test_reports_each_missing_setting(self) -> None:
         assert config_problems(None, LINK_SECRETS) == list(LINK_SECRETS)
         partial = {k: v for k, v in GOOD.items() if k != "OURA_CLIENT_SECRET"}
-        assert config_problems(partial, SYNC_SECRETS) == ["OURA_CLIENT_SECRET"]
+        assert config_problems(partial, FETCH_SECRETS) == ["OURA_CLIENT_SECRET"]
 
     def test_sync_does_not_need_the_signing_secret(self) -> None:
         settings = {k: v for k, v in GOOD.items() if k != "OURA_MAGIC_LINK_SECRET"}
-        assert config_problems(settings, SYNC_SECRETS) == []
+        assert config_problems(settings, FETCH_SECRETS) == []
 
     def test_short_signing_secret_is_flagged(self) -> None:
         problems = config_problems({**GOOD, "OURA_MAGIC_LINK_SECRET": "short"}, LINK_SECRETS)

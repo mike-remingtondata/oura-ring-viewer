@@ -1,6 +1,8 @@
-"""Build the JSON view-model for ``GET /data`` from the local plugin tables.
+"""Shape the JSON view-model for ``GET /data`` from rows fetched live.
 
-Reads only plugin tables, never Oura, so opening the chart costs no API call.
+The rows come from ``services/fetch.py`` and exist only for the length of the
+request; nothing here reads or writes Oura data in the database. Connection
+status is read from the plugin's own status table.
 
 Series are dense: one slot per calendar day in the window, ``None`` where Oura
 had nothing. The chart draws a gap as a gap instead of silently joining the
@@ -8,8 +10,12 @@ days on either side of it.
 """
 
 import datetime as dt
-from typing import Any
 
+from typing import Any, Sequence
+
+from oura_ring_viewer.models import OuraSyncState
+from oura_ring_viewer.services.fetch import RECONNECT_ERRORS
+from oura_ring_viewer.services.normalize import NormalizedDay
 from oura_ring_viewer.services.settings import (
     DISCLAIMER,
     FAMILY_ACTIVITY,
@@ -18,16 +24,12 @@ from oura_ring_viewer.services.settings import (
     FAMILY_SPO2,
     RANGE_OPTIONS,
 )
-from oura_ring_viewer.services.storage import fetch_daily_window, get_sync_state, get_tokens
-from oura_ring_viewer.services.sync import ERROR_AUTH_FAILED, ERROR_REFRESH_FAILED
+from oura_ring_viewer.services.storage import get_sync_state, get_tokens
 
 STATUS_CONNECTED = "connected"
 STATUS_EXPIRED = "expired"
 STATUS_LINK_PENDING = "link_pending"
 STATUS_DISCONNECTED = "disconnected"
-
-# Errors that mean the stored tokens are dead and the patient must reconnect.
-_RECONNECT_ERRORS = frozenset({ERROR_REFRESH_FAILED, ERROR_AUTH_FAILED})
 
 # (chart key, family, payload key). The chart reads only these keys.
 METRICS: tuple[tuple[str, str, str], ...] = (
@@ -41,37 +43,56 @@ METRICS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def build_payload(patient_id: str, range_days: int, *, now: dt.datetime) -> dict[str, Any]:
-    """Shape everything the chart needs for one patient and range."""
+def connection_status(patient_id: str) -> tuple[str, OuraSyncState | None]:
+    """The patient's connection status and their status row, if any."""
+    state = get_sync_state(patient_id)
+    has_tokens = get_tokens(patient_id) is not None
+    last_error = state.last_error if state else ""
+    if has_tokens and last_error in RECONNECT_ERRORS:
+        return STATUS_EXPIRED, state
+    if has_tokens:
+        return STATUS_CONNECTED, state
+    if state is not None and state.link_pending:
+        return STATUS_LINK_PENDING, state
+    return STATUS_DISCONNECTED, state
+
+
+def window(range_days: int, today: dt.date) -> tuple[dt.date, dt.date]:
+    """The inclusive ``range_days`` window ending today."""
     if range_days not in RANGE_OPTIONS:
         raise ValueError(f"unsupported range_days: {range_days}")
+    return today - dt.timedelta(days=range_days - 1), today
 
-    state = get_sync_state(patient_id)
-    last_error = state.last_error if state else ""
-    status = _status(
-        has_tokens=get_tokens(patient_id) is not None,
-        last_error=last_error,
-        link_pending=bool(state.link_pending) if state else False,
-    )
 
-    end_day = now.date()
-    start_day = end_day - dt.timedelta(days=range_days - 1)
+def build_payload(
+    *,
+    range_days: int,
+    today: dt.date,
+    status: str,
+    state: OuraSyncState | None,
+    rows: Sequence[NormalizedDay] = (),
+    forbidden_endpoints: Sequence[str] = (),
+    fetch_error: str = "",
+) -> dict[str, Any]:
+    """Shape everything the chart needs from in-memory rows and status."""
+    start_day, end_day = window(range_days, today)
     days = [start_day + dt.timedelta(days=i) for i in range(range_days)]
     index = {day: i for i, day in enumerate(days)}
 
     series: dict[str, list[Any]] = {key: [None] * len(days) for key, _, _ in METRICS}
-    for row in fetch_daily_window(patient_id, start_day=start_day, end_day=end_day):
-        # The query is bounded to the window, so every row has a slot. A
-        # KeyError here means that invariant broke, which should be loud.
-        slot = index[row.day]
-        payload = row.payload if isinstance(row.payload, dict) else {}
+    for row in rows:
+        slot = index.get(row.day)
+        if slot is None:
+            continue
         for key, family, field in METRICS:
             if family == row.family:
-                series[key][slot] = payload.get(field)
+                series[key][slot] = row.payload.get(field)
 
     return {
         "connection_status": status,
-        "last_error": last_error,
+        "last_error": state.last_error if state else "",
+        "fetch_error": fetch_error,
+        "forbidden_endpoints": list(forbidden_endpoints),
         "last_synced_at": _iso(state.last_synced_at if state else None),
         "link_sent_at": _iso(state.last_link_sent_at if state else None),
         "range": f"{range_days}d",
@@ -82,16 +103,6 @@ def build_payload(patient_id: str, range_days: int, *, now: dt.datetime) -> dict
         "has_data": any(value is not None for values in series.values() for value in values),
         "disclaimer": DISCLAIMER,
     }
-
-
-def _status(*, has_tokens: bool, last_error: str, link_pending: bool) -> str:
-    if has_tokens and last_error in _RECONNECT_ERRORS:
-        return STATUS_EXPIRED
-    if has_tokens:
-        return STATUS_CONNECTED
-    if link_pending:
-        return STATUS_LINK_PENDING
-    return STATUS_DISCONNECTED
 
 
 def _latest(values: list[Any], days: list[dt.date]) -> dict[str, Any] | None:

@@ -18,10 +18,16 @@ class TestRoundTrip:
         assert (claims.patient_id, claims.nonce) == ("pat-1", "nonce-1")
         assert claims.expires_at == NOW + MAGIC_LINK_TTL_SECONDS
 
-    def test_state_outlives_the_link(self) -> None:
+    def test_state_has_its_own_short_lifetime(self) -> None:
+        # The state only has to survive Oura's sign-in and consent screens. It is
+        # signed when the link is opened, so it is timed from then, not from
+        # when the (much longer lived) link was sent.
         state = magic_link.sign_state("pat-1", "nonce-1", SECRET, now=NOW)
-        claims = magic_link.verify_state(state, SECRET, now=NOW + MAGIC_LINK_TTL_SECONDS + 60)
+        claims = magic_link.verify_state(state, SECRET, now=NOW + STATE_TTL_SECONDS - 1)
         assert claims.expires_at == NOW + STATE_TTL_SECONDS
+        assert STATE_TTL_SECONDS < MAGIC_LINK_TTL_SECONDS
+        with pytest.raises(InvalidToken, match="expired"):
+            magic_link.verify_state(state, SECRET, now=NOW + STATE_TTL_SECONDS)
 
     def test_nonces_are_unique_hex(self) -> None:
         nonces = {magic_link.new_nonce() for _ in range(50)}

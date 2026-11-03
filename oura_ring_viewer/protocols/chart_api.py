@@ -2,10 +2,9 @@
 
 Routes:
   GET  /                       -> HTML shell (inline CSS and JS, no external scripts)
-  GET  /data?patient_id=&range -> JSON view-model, served from local tables only
-  POST /sync?patient_id=&range -> manual pull from Oura
+  GET  /data?patient_id=&range -> JSON view-model, fetched live from Oura, never stored
   POST /send-link?patient_id=  -> mint a connection link, optionally via the portal
-  POST /disconnect?patient_id= -> purge tokens and every cached row
+  POST /disconnect?patient_id= -> remove the patient's tokens and connection status
 
 Every route requires a Canvas staff session (``StaffSessionAuthMixin``), and
 then passes ``_gate`` before touching patient data. The gate rejects a
@@ -42,18 +41,24 @@ from oura_ring_viewer.services.access import (
     resolve_rule,
     staff_can_view,
 )
-from oura_ring_viewer.services.chart_data import build_payload
+from oura_ring_viewer.services.chart_data import (
+    STATUS_CONNECTED,
+    build_payload,
+    connection_status,
+    window,
+)
 from oura_ring_viewer.services.config import (
+    FETCH_SECRETS,
     LINK_SECRETS,
     MAGIC_LINK_SECRET,
     REDIRECT_URI,
-    SYNC_SECRETS,
     build_client,
     clean_patient_id,
     config_problems,
     connect_url,
 )
 from oura_ring_viewer.services.crypto import TokenCipher
+from oura_ring_viewer.services.fetch import fetch_window
 from oura_ring_viewer.services.oauth import RefreshFailed, TokensNotFound
 from oura_ring_viewer.services.oura_client import OuraAPIError, OuraAuthError
 from oura_ring_viewer.services.settings import (
@@ -62,7 +67,7 @@ from oura_ring_viewer.services.settings import (
     parse_range_days,
 )
 from oura_ring_viewer.services.storage import delete_all_for_patient, upsert_sync_state
-from oura_ring_viewer.services.sync import sync_patient
+
 
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
@@ -131,52 +136,62 @@ class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
 
     @api.get("/data")
     def chart_data(self) -> list[Response | Effect]:
-        """Return the JSON view-model for the requested range."""
-        grant = _gate(self.request, self.secrets)
-        if isinstance(grant, Response):
-            return [grant]
-        range_days = parse_range_days(self.request.query_params.get("range"))
-        # Reads local tables only; an exception here is a bug and should
-        # surface to monitoring rather than be swallowed.
-        return [JSONResponse(content=build_payload(grant.patient_id, range_days, now=_now()))]
+        """Fetch the requested window live from Oura and return the view-model.
 
-    @api.post("/sync")
-    def sync(self) -> list[Response | Effect]:
-        """Pull fresh summaries from Oura for the requested range."""
+        Nothing fetched is stored. A patient who is not connected, or whose
+        connection has expired, gets their status and no data. A failed fetch
+        still returns the view-model, with ``fetch_error`` set for the chart.
+        """
         grant = _gate(self.request, self.secrets)
         if isinstance(grant, Response):
             return [grant]
         patient_id = grant.patient_id
-        problems = config_problems(self.secrets, SYNC_SECRETS)
+        range_days = parse_range_days(self.request.query_params.get("range"))
+        now = _now()
+        status, state = connection_status(patient_id)
+        if status != STATUS_CONNECTED:
+            return [JSONResponse(content=build_payload(
+                range_days=range_days, today=now.date(), status=status, state=state,
+            ))]
+
+        problems = config_problems(self.secrets, FETCH_SECRETS)
         if problems:
             return [_misconfigured(problems)]
 
+        start_day, end_day = window(range_days, now.date())
+        result = None
+        fetch_error = ""
         try:
-            result = sync_patient(
+            result = fetch_window(
                 patient_id=patient_id,
-                range_days=parse_range_days(self.request.query_params.get("range")),
+                start_day=start_day,
+                end_day=end_day,
                 client=build_client(self.secrets),
                 cipher=TokenCipher(),
-                now=_now(),
+                now=now,
             )
         except TokensNotFound:
-            return [_error("not_connected", HTTPStatus.CONFLICT)]
+            pass  # Disconnected between the status check and the fetch.
         except (RefreshFailed, OuraAuthError) as exc:
-            # sync_patient has already recorded the error code the chart uses
-            # to offer a reconnect. Do not overwrite it here.
-            log.warning(f"oura sync for {patient_id} needs reconnect: {type(exc).__name__}")
-            return [_error("reconnect_required", HTTPStatus.BAD_GATEWAY)]
+            # fetch_window has recorded the error code the chart uses to offer a
+            # reconnect; the status re-read below picks it up.
+            log.warning(f"oura fetch for {patient_id} needs reconnect: {type(exc).__name__}")
+            fetch_error = "reconnect_required"
         except OuraAPIError as exc:
-            log.warning(f"oura sync for {patient_id} failed with HTTP {exc.status_code}")
-            code = "rate_limited" if exc.status_code == HTTPStatus.TOO_MANY_REQUESTS else "oura_unavailable"
-            return [_error(code, HTTPStatus.BAD_GATEWAY)]
+            log.warning(f"oura fetch for {patient_id} failed with HTTP {exc.status_code}")
+            too_many = exc.status_code == HTTPStatus.TOO_MANY_REQUESTS
+            fetch_error = "rate_limited" if too_many else "oura_unavailable"
 
-        return [JSONResponse(content={
-            "rows_written": result.rows_written,
-            "rows_purged": result.rows_purged,
-            "latest_day": result.latest_day.isoformat() if result.latest_day else None,
-            "forbidden_endpoints": list(result.forbidden_endpoints),
-        })]
+        status, state = connection_status(patient_id)
+        return [JSONResponse(content=build_payload(
+            range_days=range_days,
+            today=now.date(),
+            status=status,
+            state=state,
+            rows=result.rows if result else (),
+            forbidden_endpoints=result.forbidden_endpoints if result else (),
+            fetch_error=fetch_error,
+        ))]
 
     @api.post("/send-link")
     def send_link(self) -> list[Response | Effect]:
@@ -226,7 +241,7 @@ class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
 
     @api.post("/disconnect")
     def disconnect(self) -> list[Response | Effect]:
-        """Purge stored tokens and every cached row for the patient."""
+        """Remove the patient's tokens and connection status."""
         grant = _gate(self.request, self.secrets)
         if isinstance(grant, Response):
             return [grant]
@@ -254,7 +269,7 @@ def _portal_message(
         return None, "skipped", "no_messageable_channel"
     body = (
         "Your care team has shared a secure link to connect your Oura Ring to your "
-        "health record. Open it on your phone within 15 minutes:\n\n"
+        "health record. Open it on your phone within 3 days:\n\n"
         f"{link}\n\n"
         "Your care team will see your sleep, readiness, activity and blood oxygen "
         "summaries. If you did not expect this message, you can ignore it."
@@ -279,12 +294,6 @@ def _has_messageable_channel(patient_id: str) -> bool:
             state=ContactPointState.ACTIVE.value,
         ).exists()
     )
-
-
-def _error(code: str, status: HTTPStatus) -> JSONResponse:
-    return JSONResponse(content={"error": code}, status_code=status)
-
-
 def _deny(
     code: str, status: HTTPStatus, html: bool, message: str, *, rule: str | None = None
 ) -> Response:
