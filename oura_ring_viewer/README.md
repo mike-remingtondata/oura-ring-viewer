@@ -25,7 +25,10 @@ later as an opt-in command.
 **From the patient portal (one tap).** The plugin adds **Oura Ring** to the
 portal menu. The patient taps **Connect Oura Ring**, Oura opens in a new tab,
 they sign in and approve, and the portal page updates on its own. A chart
-staff already have open on that patient picks it up within 30 seconds. The same
+staff already have open on that patient picks it up within 30 seconds.
+It works the other way too: when a patient stops sharing, an open chart
+clears their data within a minute. That check reads only the connection
+status, never Oura. The same
 page shows that they are sharing and has a **Stop sharing** button. There is
 no link to copy: the patient is identified by their own portal session.
 

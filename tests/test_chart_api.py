@@ -93,6 +93,7 @@ def _connect() -> None:
 ROUTES = [
     ("GET", "/", "chart_shell"),
     ("GET", "/data", "chart_data"),
+    ("GET", "/status", "status"),
     ("POST", "/send-link", "send_link"),
     ("POST", "/disconnect", "disconnect"),
 ]
@@ -362,3 +363,15 @@ def test_disconnect_removes_tokens_and_status() -> None:
     assert body == {"disconnected": True}
     assert not OuraOAuthToken.objects.filter(patient_id=PATIENT).exists()
     assert get_sync_state(PATIENT) is None
+
+
+class TestStatusRoute:
+    def test_reports_status_without_calling_oura(self) -> None:
+        _connect()
+        with patch("oura_ring_viewer.protocols.chart_api.fetch_window") as fetch:
+            body = _json(_api("GET", "/status").status()[0])
+        fetch.assert_not_called()
+        assert body == {"connection_status": "connected"}
+
+    def test_a_patient_who_stopped_sharing(self) -> None:
+        assert _json(_api("GET", "/status").status()[0]) == {"connection_status": "disconnected"}

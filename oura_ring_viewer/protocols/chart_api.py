@@ -3,6 +3,7 @@
 Routes:
   GET  /                       -> HTML shell (inline CSS and JS, no external scripts)
   GET  /data?patient_id=&range -> JSON view-model, fetched live from Oura, never stored
+  GET  /status?patient_id=     -> connection status only; never calls Oura
   POST /send-link?patient_id=  -> issue a connection link, optionally via the portal;
                                   ``reuse=1`` re-sends the link already out
   POST /disconnect?patient_id= -> remove the patient's tokens and connection status
@@ -198,6 +199,19 @@ class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
             forbidden_endpoints=result.forbidden_endpoints if result else (),
             fetch_error=fetch_error,
         ))]
+
+    @api.get("/status")
+    def status(self) -> list[Response | Effect]:
+        """Connection status only, cheap enough for an open chart to check often.
+
+        Lets a panel showing data notice that the patient stopped sharing and
+        clear it, without reading Oura again.
+        """
+        grant = _gate(self.request, self.secrets)
+        if isinstance(grant, Response):
+            return [grant]
+        status, _ = connection_status(grant.patient_id, _now())
+        return [JSONResponse(content={"connection_status": status})]
 
     @api.post("/send-link")
     def send_link(self) -> list[Response | Effect]:

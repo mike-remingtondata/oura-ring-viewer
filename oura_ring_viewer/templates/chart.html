@@ -102,6 +102,9 @@
   // when they approve, whether from a staff link or from the portal. Checking a
   // patient who is not connected never calls Oura.
   var POLL_PENDING_MS = 10000, POLL_IDLE_MS = 30000, POLL_FOR_MS = 30 * 60 * 1000;
+  // While data is on screen, check the connection (not the data) so a patient
+  // who stops sharing disappears from an open chart within a minute.
+  var CONSENT_CHECK_MS = 60000;
 
   var STATUS_LABELS = {
     connected: "Connected", expired: "Reconnect needed",
@@ -313,13 +316,30 @@
   function schedulePoll(status) {
     clearTimeout(state.poll);
     state.poll = null;
-    if (status === "connected") { state.pollUntil = 0; return; }
+    if (status === "connected") {
+      state.pollUntil = 0;
+      state.poll = setTimeout(checkConsent, CONSENT_CHECK_MS);
+      return;
+    }
     if (!state.pollUntil) state.pollUntil = Date.now() + POLL_FOR_MS;
     if (Date.now() > state.pollUntil) return;
     state.poll = setTimeout(function () {
       if (document.hidden || state.busy) { schedulePoll(status); return; }
       load(true);
     }, status === "link_pending" ? POLL_PENDING_MS : POLL_IDLE_MS);
+  }
+
+  function checkConsent() {
+    if (document.hidden || state.busy) { schedulePoll("connected"); return; }
+    call("GET", "/status").then(function (r) {
+      if (r.ok && r.body.connection_status !== "connected") {
+        load(true).then(function () {
+          notice("The patient stopped sharing their Oura data.", "warn");
+        });
+      } else {
+        schedulePoll("connected");
+      }
+    }).catch(function () { schedulePoll("connected"); });
   }
 
   // A connected patient's data is read from Oura on every load, which takes a
@@ -412,6 +432,11 @@
       state.range = Number(b.dataset.range);
       load();
     });
+  });
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden || !state.data) return;
+    if (state.data.connection_status === "connected") checkConsent(); else load(true);
   });
 
   load();
