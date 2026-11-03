@@ -87,6 +87,11 @@ most 360 rows per patient. Normalized metrics live in `payload`, and the unique
 constraint on `(patient_id, day, family)` makes re-syncing an overlapping range
 idempotent.
 
+Retention is enforced by a daily scheduled task (`OuraRetentionTask`, 03:17 UTC)
+that deletes every patient's rows older than 90 days. Sync also purges, but only
+for the patient being synced; the daily task is what makes the limit hold for a
+patient who is never synced again, for example after revoking access in Oura.
+
 ## Configuration
 
 Five manifest variables, two of them sensitive:

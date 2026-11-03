@@ -31,6 +31,15 @@
                     "read": [],
                     "write": []
                 }
+            },
+            {
+                "class": "oura_ring_viewer.cron.retention:OuraRetentionTask",
+                "description": "Runs daily: deletes Oura daily summaries older than 90 days for every patient, so retention holds even when a patient's data is no longer synced.",
+                "data_access": {
+                    "event": "",
+                    "read": [],
+                    "write": []
+                }
             }
         ],
         "commands": [],

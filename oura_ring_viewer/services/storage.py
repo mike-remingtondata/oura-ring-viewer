@@ -102,6 +102,18 @@ def purge_old_daily(patient_id: str, *, today: dt.date) -> int:
     return int(deleted)
 
 
+def purge_expired(*, today: dt.date) -> int:
+    """Delete every patient's rows older than the retention horizon.
+
+    Run daily by ``OuraRetentionTask``, so the 90 day limit holds even for a
+    patient whose care team never syncs again, for example after the patient
+    revokes access in Oura. Returns rows deleted.
+    """
+    cutoff = today - dt.timedelta(days=DAILY_RETENTION_DAYS)
+    deleted, _ = OuraDaily.objects.filter(day__lt=cutoff).delete()
+    return int(deleted)
+
+
 def fetch_daily_window(
     patient_id: str, *, start_day: dt.date, end_day: dt.date
 ) -> list[OuraDaily]:
