@@ -170,10 +170,10 @@ refused request changes nothing: no link is issued and nothing is deleted.
 
 ## Open questions
 
-- **Certifying against the sandbox.** Whether Canvas's partner review can be
-  done against Oura's sandbox, or needs a live OAuth flow with production
-  credentials. Canvas's documentation does not say; asked of the partner
-  program directly.
+- **Production use at a practice.** Canvas confirmed (Nov 2, 2026) that
+  certification can run on Oura's sandbox data. Before any practice uses real
+  Oura data, Oura has to approve the application past its 10-user limit and,
+  under its API Agreement, approve each practice as an end customer.
 - **Revoking at Oura on disconnect.** Add once Oura's revoke endpoint can be
   exercised with a registered application.
 
