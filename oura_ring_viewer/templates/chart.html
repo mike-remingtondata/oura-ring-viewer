@@ -98,9 +98,10 @@
   var PATIENT_ID = "{{ patient_id }}";
   var API = "{{ api_path }}";
   var state = { range: 14, data: null, busy: false, poll: null, pollUntil: 0, lastStatus: null };
-  // While a link is out, check back so the panel fills in on its own once the
-  // patient approves. Checking a pending patient never calls Oura.
-  var POLL_MS = 10000, POLL_FOR_MS = 30 * 60 * 1000;
+  // Until the patient is connected, check back so the panel fills in on its own
+  // when they approve, whether from a staff link or from the portal. Checking a
+  // patient who is not connected never calls Oura.
+  var POLL_PENDING_MS = 10000, POLL_IDLE_MS = 30000, POLL_FOR_MS = 30 * 60 * 1000;
 
   var STATUS_LABELS = {
     connected: "Connected", expired: "Reconnect needed",
@@ -292,7 +293,7 @@
     if (data.has_data) renderCards(data);
 
     var problem = data.fetch_error || data.last_error;
-    var justConnected = connected && state.lastStatus === "link_pending";
+    var justConnected = connected && !!state.lastStatus && state.lastStatus !== "connected";
     state.lastStatus = status;
     if (justConnected && !problem) {
       notice("The patient connected their Oura Ring.");
@@ -312,13 +313,13 @@
   function schedulePoll(status) {
     clearTimeout(state.poll);
     state.poll = null;
-    if (status !== "link_pending") { state.pollUntil = 0; return; }
+    if (status === "connected") { state.pollUntil = 0; return; }
     if (!state.pollUntil) state.pollUntil = Date.now() + POLL_FOR_MS;
     if (Date.now() > state.pollUntil) return;
     state.poll = setTimeout(function () {
       if (document.hidden || state.busy) { schedulePoll(status); return; }
       load(true);
-    }, POLL_MS);
+    }, status === "link_pending" ? POLL_PENDING_MS : POLL_IDLE_MS);
   }
 
   // A connected patient's data is read from Oura on every load, which takes a
