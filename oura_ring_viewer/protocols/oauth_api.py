@@ -3,7 +3,7 @@
 These routes bypass ``StaffSessionAuthMixin`` because the patient following
 the link has no Canvas session. Security comes instead from:
 
-  * the link token: HMAC-SHA256, 15 minute expiry, bound to a nonce stored on
+  * the link token: HMAC-SHA256, 3 day expiry, bound to a nonce stored on
     ``OuraSyncState`` so only the most recently issued link works; and
   * the OAuth ``state``: a separately typed signed token carrying the same
     nonce, so the callback is tied to a link this plugin issued.

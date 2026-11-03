@@ -139,3 +139,19 @@ class TestSeries:
 
     def test_rows_outside_the_window_are_ignored(self) -> None:
         assert _payload([_row(10, FAMILY_SLEEP, {"score": 1})])["has_data"] is False
+
+
+class TestLinkExpiry:
+    def test_an_unused_link_expires_after_three_days(self) -> None:
+        upsert_sync_state(PATIENT, link_pending=True, last_link_sent_at=NOW, last_link_nonce="n")
+        just_before = NOW + dt.timedelta(hours=72) - dt.timedelta(seconds=1)
+        assert connection_status(PATIENT, just_before)[0] == "link_pending"
+        assert connection_status(PATIENT, NOW + dt.timedelta(hours=72))[0] == "link_expired"
+        assert connection_status(PATIENT)[0] == "link_pending", "no clock, no expiry check"
+
+    def test_the_payload_says_when_the_link_expires(self) -> None:
+        upsert_sync_state(PATIENT, link_pending=True, last_link_sent_at=NOW, last_link_nonce="n")
+        assert _payload()["link_expires_at"] == (NOW + dt.timedelta(hours=72)).isoformat()
+
+    def test_no_link_no_expiry(self) -> None:
+        assert _payload()["link_expires_at"] is None

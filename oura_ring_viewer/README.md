@@ -22,19 +22,31 @@ later as an opt-in command.
 
 ## How a patient connects
 
-1. Staff open the Oura Ring tile in the patient's chart and choose **Send via
-   patient portal** or **Create link to copy**.
-2. The patient opens the link on their phone within 3 days and is sent to
-   Oura's own consent screen, where they sign in and approve sharing. Portal
-   messages are often read hours later, which is why the link lasts days
-   rather than minutes; it is still single use and bound to one patient.
-3. Oura returns them to the plugin, which stores the connection and shows a
-   confirmation page explaining how to stop sharing.
-4. A chart left open on the patient while the link is out checks back every
-   10 seconds and fills in on its own once the patient approves.
+**From the patient portal (one tap).** The plugin adds **Oura Ring** to the
+portal menu. The patient taps **Connect Oura Ring**, Oura opens in a new tab,
+they sign in and approve, and the portal page updates on its own. The same
+page shows that they are sharing and has a **Stop sharing** button. There is
+no link to copy: the patient is identified by their own portal session.
 
-Creating a new link cancels any earlier one, and a link stops working once the
-connection completes.
+**From the care team (one click).** Staff open the Oura Ring tile in the chart
+and choose **Send to patient**. The patient gets a portal message with a secure
+link, taps it on their phone, and approves in Oura. The chart panel checks back
+every 10 seconds and fills in on its own when they do. **Copy link instead**
+covers patients who do not use the portal.
+
+Why staff send a link instead of pressing a connect button themselves: an
+Oura sign-in connects whoever is signed in on that browser, which in the chart
+would be the clinician, not the patient.
+
+Link details:
+
+- A link lasts 3 days, since portal messages are often read later, and works
+  once. A link that runs out unused shows as **Link expired** in the chart.
+- While a link is out, **Resend to patient** and **Copy link** reuse that same
+  link, so nothing the patient already has stops working. Only **Send a new
+  link** replaces it, and asks first.
+- A patient who starts from the portal while a staff link is out uses the same
+  pending connection, so either path completes it.
 
 ## Status
 
@@ -135,9 +147,12 @@ refused request changes nothing: no link is issued and nothing is deleted.
 ## Security notes
 
 - **Staff routes** require a Canvas staff session and then pass the
-  per-patient access rule above. **Patient routes** (`/connect`, `/callback`)
-  are public by necessity and are protected instead by signed, expiring tokens
-  bound to a single-use nonce.
+  per-patient access rule above. **Portal routes** (`/portal/...`) require a
+  signed-in patient and act only on the patient named by the Canvas session,
+  never on an id in the URL. A login acting for someone else, such as a parent,
+  is refused: connecting a wearable is the patient's own decision. **Link
+  routes** (`/connect`, `/callback`) are public by necessity and are protected
+  instead by signed, expiring tokens bound to a single-use nonce.
 - Link and OAuth state tokens carry a type claim, so neither can be replayed as
   the other. The signing algorithm is pinned, so an unsigned `alg: none` token
   is rejected.
@@ -149,9 +164,9 @@ refused request changes nothing: no link is issued and nothing is deleted.
   encryption when the platform allows it.
 - The chart page loads no external scripts and writes every value with
   `textContent`, never `innerHTML`.
-- **Disconnect** deletes both rows this plugin holds for the patient, but does
-  not yet revoke the grant at Oura. Patients can revoke it in their Oura
-  account, as the confirmation page tells them.
+- **Disconnect** (staff) and **Stop sharing** (patient) delete both rows this
+  plugin holds for the patient, but do not yet revoke the grant at Oura.
+  Patients can revoke it in their Oura account, as the portal page says.
 
 ## Open questions
 

@@ -32,5 +32,6 @@ def _real_templates() -> Iterator[None]:
     with (
         patch("oura_ring_viewer.protocols.chart_api.render_to_string", side_effect=render_template),
         patch("oura_ring_viewer.protocols.oauth_api.render_to_string", side_effect=render_template),
+        patch("oura_ring_viewer.protocols.portal_api.render_to_string", side_effect=render_template),
     ):
         yield

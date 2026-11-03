@@ -3,7 +3,8 @@
 Routes:
   GET  /                       -> HTML shell (inline CSS and JS, no external scripts)
   GET  /data?patient_id=&range -> JSON view-model, fetched live from Oura, never stored
-  POST /send-link?patient_id=  -> mint a connection link, optionally via the portal
+  POST /send-link?patient_id=  -> issue a connection link, optionally via the portal;
+                                  ``reuse=1`` re-sends the link already out
   POST /disconnect?patient_id= -> remove the patient's tokens and connection status
 
 Every route requires a Canvas staff session (``StaffSessionAuthMixin``), and
@@ -59,6 +60,7 @@ from oura_ring_viewer.services.config import (
 )
 from oura_ring_viewer.services.crypto import TokenCipher
 from oura_ring_viewer.services.fetch import fetch_window
+from oura_ring_viewer.services.links import live_link_nonce
 from oura_ring_viewer.services.oauth import RefreshFailed, TokensNotFound
 from oura_ring_viewer.services.oura_client import OuraAPIError, OuraAuthError
 from oura_ring_viewer.services.settings import (
@@ -66,7 +68,11 @@ from oura_ring_viewer.services.settings import (
     PLUGIN_API_PATH,
     parse_range_days,
 )
-from oura_ring_viewer.services.storage import delete_all_for_patient, upsert_sync_state
+from oura_ring_viewer.services.storage import (
+    delete_all_for_patient,
+    get_sync_state,
+    upsert_sync_state,
+)
 
 
 def _now() -> dt.datetime:
@@ -148,7 +154,7 @@ class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
         patient_id = grant.patient_id
         range_days = parse_range_days(self.request.query_params.get("range"))
         now = _now()
-        status, state = connection_status(patient_id)
+        status, state = connection_status(patient_id, now)
         if status != STATUS_CONNECTED:
             return [JSONResponse(content=build_payload(
                 range_days=range_days, today=now.date(), status=status, state=state,
@@ -182,7 +188,7 @@ class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
             too_many = exc.status_code == HTTPStatus.TOO_MANY_REQUESTS
             fetch_error = "rate_limited" if too_many else "oura_unavailable"
 
-        status, state = connection_status(patient_id)
+        status, state = connection_status(patient_id, now)
         return [JSONResponse(content=build_payload(
             range_days=range_days,
             today=now.date(),
@@ -200,6 +206,11 @@ class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
         ``channels`` is ``portal`` (the default) or empty for copy-link only.
         The link is always returned so staff can share it another way if
         portal delivery is unavailable.
+
+        With ``reuse=1`` the link that is already out is re-signed with its
+        original send time, so copying or resending it does not cancel what
+        the patient may already have. Without a usable link to reuse, a new
+        one is issued, which cancels any earlier link.
         """
         grant = _gate(self.request, self.secrets)
         if isinstance(grant, Response):
@@ -210,13 +221,20 @@ class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
             return [_misconfigured(problems)]
 
         now = _now()
-        nonce = magic_link.new_nonce()
+        state = get_sync_state(patient_id)
+        reuse = self.request.query_params.get("reuse") == "1"
+        nonce = live_link_nonce(state, now) if reuse else None
+        if nonce is not None and state is not None and state.last_link_sent_at is not None:
+            sent_at = state.last_link_sent_at
+        else:
+            nonce, sent_at = magic_link.new_nonce(), now
+            # Storing the nonce invalidates any earlier link for this patient.
+            upsert_sync_state(patient_id, last_link_sent_at=now, last_link_nonce=nonce, link_pending=True)
         token = magic_link.mint_link(
-            patient_id, nonce, self.secrets[MAGIC_LINK_SECRET], now=int(now.timestamp())
+            patient_id, nonce, self.secrets[MAGIC_LINK_SECRET], now=int(sent_at.timestamp())
         )
         link = connect_url(self.secrets[REDIRECT_URI], token)
-        # Storing the nonce invalidates any earlier link for this patient.
-        upsert_sync_state(patient_id, last_link_sent_at=now, last_link_nonce=nonce, link_pending=True)
+        expires_in = int(sent_at.timestamp()) + MAGIC_LINK_TTL_SECONDS - int(now.timestamp())
 
         effects: list[Response | Effect] = []
         portal_status = "skipped"
@@ -232,8 +250,9 @@ class OuraChartAPI(StaffSessionAuthMixin, SimpleAPI):
 
         effects.append(JSONResponse(content={
             "connection_link": link,
-            "link_sent_at": now.isoformat(),
-            "expires_in_seconds": MAGIC_LINK_TTL_SECONDS,
+            "link_sent_at": sent_at.isoformat(),
+            "expires_in_seconds": expires_in,
+            "reused": sent_at != now,
             "portal_status": portal_status,
             "portal_error": portal_error,
         }))
@@ -272,7 +291,9 @@ def _portal_message(
         "health record. Open it on your phone within 3 days:\n\n"
         f"{link}\n\n"
         "Your care team will see your sleep, readiness, activity and blood oxygen "
-        "summaries. If you did not expect this message, you can ignore it."
+        "summaries. You can also connect, or stop sharing, any time from Oura Ring "
+        "in your patient portal menu. If you did not expect this message, you can "
+        "ignore it."
     )
     try:
         effect = Message(content=body, sender_id=sender_id, recipient_id=patient_id).create_and_send()

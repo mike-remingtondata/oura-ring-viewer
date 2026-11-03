@@ -15,6 +15,7 @@ from typing import Any, Sequence
 
 from oura_ring_viewer.models import OuraSyncState
 from oura_ring_viewer.services.fetch import RECONNECT_ERRORS
+from oura_ring_viewer.services.links import link_expired, link_expires_at
 from oura_ring_viewer.services.normalize import NormalizedDay
 from oura_ring_viewer.services.settings import (
     DISCLAIMER,
@@ -29,6 +30,7 @@ from oura_ring_viewer.services.storage import get_sync_state, get_tokens
 STATUS_CONNECTED = "connected"
 STATUS_EXPIRED = "expired"
 STATUS_LINK_PENDING = "link_pending"
+STATUS_LINK_EXPIRED = "link_expired"
 STATUS_DISCONNECTED = "disconnected"
 
 # (chart key, family, payload key). The chart reads only these keys.
@@ -43,8 +45,14 @@ METRICS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def connection_status(patient_id: str) -> tuple[str, OuraSyncState | None]:
-    """The patient's connection status and their status row, if any."""
+def connection_status(
+    patient_id: str, now: dt.datetime | None = None
+) -> tuple[str, OuraSyncState | None]:
+    """The patient's connection status and their status row, if any.
+
+    A staff link that ran out unused reads as ``link_expired`` rather than
+    leaving the chart waiting forever. Without ``now`` that check is skipped.
+    """
     state = get_sync_state(patient_id)
     has_tokens = get_tokens(patient_id) is not None
     last_error = state.last_error if state else ""
@@ -53,6 +61,8 @@ def connection_status(patient_id: str) -> tuple[str, OuraSyncState | None]:
     if has_tokens:
         return STATUS_CONNECTED, state
     if state is not None and state.link_pending:
+        if now is not None and link_expired(state, now):
+            return STATUS_LINK_EXPIRED, state
         return STATUS_LINK_PENDING, state
     return STATUS_DISCONNECTED, state
 
@@ -95,6 +105,7 @@ def build_payload(
         "forbidden_endpoints": list(forbidden_endpoints),
         "last_synced_at": _iso(state.last_synced_at if state else None),
         "link_sent_at": _iso(state.last_link_sent_at if state else None),
+        "link_expires_at": _iso(link_expires_at(state)),
         "range": f"{range_days}d",
         "days": [day.isoformat() for day in days],
         "series": series,

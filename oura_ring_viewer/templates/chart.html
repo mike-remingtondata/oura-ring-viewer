@@ -14,6 +14,8 @@
   .pill.connected { background: #e6f4ea; color: #1e7b3a; }
   .pill.expired { background: #fdecea; color: #b3261e; }
   .pill.link_pending { background: #fff4e0; color: #8a5300; }
+  .pill.link_expired { background: #fdecea; color: #b3261e; }
+  .textlink { background: none; border: 0; padding: 6px 4px; color: #2f5bd3; text-decoration: underline; }
   .synced { color: #6b7385; font-size: 12px; margin-left: auto; }
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
   button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid #c9ced8; background: #fff;
@@ -68,11 +70,13 @@
 
 <section id="connect" class="panel" hidden>
   <h2 id="connect-title">Connect this patient's Oura Ring</h2>
-  <p id="connect-help">Send the patient a secure link. They open it on their phone, sign in to Oura and
-     approve sharing. The link expires after 3 days and stops working once used.</p>
+  <p id="connect-help">Send the patient a secure link through the portal. They tap it, sign in to Oura and
+     approve sharing; this panel fills in on its own. Patients can also connect themselves from
+     Oura Ring in the portal menu.</p>
   <div class="toolbar">
-    <button id="send-portal" class="primary" type="button">Send via patient portal</button>
-    <button id="send-copy" type="button">Create link to copy</button>
+    <button id="send-portal" class="primary" type="button">Send to patient</button>
+    <button id="send-copy" class="textlink" type="button">Copy link instead</button>
+    <button id="replace" class="textlink" type="button" hidden>Send a new link</button>
   </div>
   <div id="link-box" hidden>
     <div class="link-row">
@@ -93,14 +97,14 @@
   "use strict";
   var PATIENT_ID = "{{ patient_id }}";
   var API = "{{ api_path }}";
-  var state = { range: 14, data: null, busy: false, poll: null, pollUntil: 0 };
+  var state = { range: 14, data: null, busy: false, poll: null, pollUntil: 0, lastStatus: null };
   // While a link is out, check back so the panel fills in on its own once the
   // patient approves. Checking a pending patient never calls Oura.
   var POLL_MS = 10000, POLL_FOR_MS = 30 * 60 * 1000;
 
   var STATUS_LABELS = {
     connected: "Connected", expired: "Reconnect needed",
-    link_pending: "Link sent", disconnected: "Not connected"
+    link_pending: "Link sent", link_expired: "Link expired", disconnected: "Not connected"
   };
   var ERRORS = {
     not_connected: "This patient has not connected an Oura Ring yet.",
@@ -185,7 +189,7 @@
 
   function setBusy(busy) {
     state.busy = busy;
-    ["refresh", "disconnect", "send-portal", "send-copy"].forEach(function (id) { $(id).disabled = busy; });
+    ["refresh", "disconnect", "send-portal", "send-copy", "replace"].forEach(function (id) { $(id).disabled = busy; });
   }
 
   function sparkline(values) {
@@ -258,12 +262,24 @@
     $("refresh").hidden = !connected;
     $("disconnect").hidden = status === "disconnected";
     $("connect").hidden = connected;
+    // While a link is out, the buttons act on that link: resending or
+    // copying it never cancels what the patient may already have.
+    var pending = status === "link_pending";
+    $("disconnect").textContent = pending ? "Cancel link" : "Disconnect";
+    $("send-portal").textContent = pending ? "Resend to patient" : "Send to patient";
+    $("send-copy").textContent = pending ? "Copy link" : "Copy link instead";
+    $("replace").hidden = !pending;
     if (status === "expired") {
       $("connect-title").textContent = "Reconnect this patient's Oura Ring";
-    } else if (status === "link_pending") {
+    } else if (pending) {
       $("connect-title").textContent = "Waiting for the patient to connect";
+    } else if (status === "link_expired") {
+      $("connect-title").textContent = "The link expired before the patient used it";
     } else {
       $("connect-title").textContent = "Connect this patient's Oura Ring";
+    }
+    if (pending && data.link_expires_at) {
+      $("link-meta").textContent = "Link expires " + new Date(data.link_expires_at).toLocaleString() + ".";
     }
 
     document.querySelector(".range").hidden = !connected;
@@ -276,7 +292,11 @@
     if (data.has_data) renderCards(data);
 
     var problem = data.fetch_error || data.last_error;
-    if (problem && ERRORS[problem]) {
+    var justConnected = connected && state.lastStatus === "link_pending";
+    state.lastStatus = status;
+    if (justConnected && !problem) {
+      notice("The patient connected their Oura Ring.");
+    } else if (problem && ERRORS[problem]) {
       notice(ERRORS[problem], status === "expired" ? "error" : "warn");
     } else if (data.forbidden_endpoints && data.forbidden_endpoints.length) {
       var names = data.forbidden_endpoints.map(function (e) { return ENDPOINT_LABELS[e] || e; });
@@ -316,9 +336,10 @@
     }).then(function () { $("refresh").disabled = state.busy; });
   }
 
-  function sendLink(viaPortal) {
+  function sendLink(viaPortal, fresh) {
+    var reuse = !fresh && state.data && state.data.connection_status === "link_pending";
     setBusy(true);
-    call("POST", "/send-link", { channels: viaPortal ? "portal" : "" }).then(function (r) {
+    call("POST", "/send-link", { channels: viaPortal ? "portal" : "", reuse: reuse ? "1" : "0" }).then(function (r) {
       if (!r.ok) {
         var extra = r.body.settings ? " (" + r.body.settings.join("; ") + ")" : "";
         notice((ERRORS[r.body.error] || "Could not create a link.") + extra, "error");
@@ -326,21 +347,21 @@
       }
       $("link").value = r.body.connection_link;
       $("link-box").hidden = false;
-      var hours = Math.round(r.body.expires_in_seconds / 3600);
-      var meta = "Expires in " + (hours >= 48 ? Math.round(hours / 24) + " days" : hours + " hours") +
-                 ". Creating a new link cancels this one.";
+      var hours = Math.max(1, Math.round(r.body.expires_in_seconds / 3600));
+      var meta = "Expires in " + (hours >= 48 ? Math.round(hours / 24) + " days" : hours + " hours") + ".";
       $("link-meta").textContent = meta;
+      if (!viaPortal) copyLink();
       // Reload first: a successful load replaces the notice, so the outcome
       // message has to be shown after it, not before.
       state.pollUntil = 0;
       return load(true).then(function () {
         if (r.body.portal_status === "sent") {
-          notice("Link sent to the patient's portal.");
+          notice(r.body.reused ? "Link sent to the patient again." : "Link sent to the patient's portal.");
         } else if (viaPortal) {
           notice("Portal message not sent: " + (PORTAL_ERRORS[r.body.portal_error] || r.body.portal_error) +
                  ". Copy the link and share it another way.", "warn");
         } else {
-          notice("Link created. Share it with the patient.");
+          notice("Link copied. Share it with the patient; it works once.");
         }
       });
     }).catch(function () {
@@ -349,13 +370,15 @@
   }
 
   function disconnect() {
-    if (!window.confirm("Disconnect this patient's Oura Ring? The care team will no longer see their Oura data.")) return;
+    if (!window.confirm(state.data && state.data.connection_status === "link_pending"
+        ? "Cancel the link sent to this patient? It will stop working."
+        : "Disconnect this patient's Oura Ring? The care team will no longer see their Oura data.")) return;
     setBusy(true);
     call("POST", "/disconnect").then(function (r) {
       if (!r.ok) { notice("Could not disconnect.", "error"); return; }
       $("link-box").hidden = true;
       return load(true).then(function () {
-        notice("Disconnected. The patient can reconnect with a new link.");
+        notice("Done. The patient can connect again any time.");
       });
     }).catch(function () {
       notice("Could not reach the plugin. Check your connection.", "error");
@@ -366,17 +389,22 @@
   $("disconnect").addEventListener("click", disconnect);
   $("send-portal").addEventListener("click", function () { sendLink(true); });
   $("send-copy").addEventListener("click", function () { sendLink(false); });
-  $("copy").addEventListener("click", function () {
+  $("replace").addEventListener("click", function () {
+    if (!window.confirm("Send a new link? The link already sent will stop working.")) return;
+    sendLink(true, true);
+  });
+  function copyLink(done) {
     var input = $("link");
     input.select();
-    var done = function () { notice("Link copied."); };
+    done = done || function () {};
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(input.value).then(done, function () { document.execCommand("copy"); done(); });
     } else {
       document.execCommand("copy");
       done();
     }
-  });
+  }
+  $("copy").addEventListener("click", function () { copyLink(function () { notice("Link copied."); }); });
   Array.prototype.forEach.call(document.querySelectorAll(".range button"), function (b) {
     b.addEventListener("click", function () {
       if (state.busy) return;

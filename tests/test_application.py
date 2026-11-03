@@ -17,3 +17,13 @@ def test_on_open_launches_the_chart_for_the_active_patient() -> None:
     assert data["url"] == "/plugin-io/api/oura_ring_viewer/?patient_id=abc123"
     assert data["target"] == "right_chart_pane_large"
     assert data["title"] == "Oura Ring"
+
+
+def test_portal_menu_item_opens_the_patients_own_page() -> None:
+    from oura_ring_viewer.applications.oura_portal_app import OuraPortalApp
+
+    effect = OuraPortalApp(event=MagicMock()).on_open()
+    data = json.loads(effect.payload)["data"]
+    assert data["url"] == "/plugin-io/api/oura_ring_viewer/portal/"
+    assert "patient_id" not in data["url"], "the portal page must trust the session, not the URL"
+    assert data["target"] == "page"

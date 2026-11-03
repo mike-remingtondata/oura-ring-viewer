@@ -234,6 +234,22 @@ class TestSendLink:
         assert state.last_link_nonce == claims.nonce
         assert state.link_pending is True
 
+    def test_reuse_resends_the_same_link_without_cancelling_it(self) -> None:
+        first = _json(self._send()[-1])
+        nonce = get_sync_state(PATIENT).last_link_nonce  # type: ignore[union-attr]
+        again = _json(list(_api("POST", "/send-link", {"channels": "", "reuse": "1"}).send_link())[-1])
+        assert again["connection_link"] == first["connection_link"]
+        assert again["reused"] is True and first["reused"] is False
+        assert again["expires_in_seconds"] <= first["expires_in_seconds"]
+        assert get_sync_state(PATIENT).last_link_nonce == nonce  # type: ignore[union-attr]
+
+    def test_reuse_with_no_live_link_issues_a_new_one(self) -> None:
+        upsert_sync_state(PATIENT, link_pending=True, last_link_nonce="old",
+                          last_link_sent_at=dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=4))
+        body = _json(list(_api("POST", "/send-link", {"channels": "", "reuse": "1"}).send_link())[-1])
+        assert body["reused"] is False
+        assert get_sync_state(PATIENT).last_link_nonce != "old"  # type: ignore[union-attr]
+
     def test_a_new_link_replaces_the_previous_nonce(self) -> None:
         self._send()
         first = get_sync_state(PATIENT)
