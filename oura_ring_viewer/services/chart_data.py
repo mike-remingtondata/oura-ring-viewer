@@ -10,8 +10,7 @@ days on either side of it.
 """
 
 import datetime as dt
-from collections.abc import Sequence
-from typing import Any
+from typing import Any, Sequence
 
 from oura_ring_viewer.models import OuraSyncState
 from oura_ring_viewer.services.fetch import RECONNECT_ERRORS

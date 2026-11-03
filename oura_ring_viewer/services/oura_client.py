@@ -67,7 +67,7 @@ class TokenSet:
     @property
     def expires_at(self) -> dt.datetime:
         """Best-guess UTC expiry for ``access_token`` from issuance."""
-        return dt.datetime.now(dt.UTC) + dt.timedelta(seconds=self.expires_in)
+        return dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=self.expires_in)
 
 
 class OuraClient:

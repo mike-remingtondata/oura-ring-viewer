@@ -12,10 +12,8 @@ rejected even though Python treats them as integers.
 """
 
 import datetime as dt
-import math
-from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, Iterable
 
 from oura_ring_viewer.services.settings import (
     FAMILY_ACTIVITY,
@@ -181,7 +179,8 @@ def _num(value: Any, low: float, high: float, *, allow_low: bool = True) -> floa
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     number = float(value)
-    if math.isnan(number):
+    # NaN check without math.isnan: the Canvas sandbox does not allow importing math.
+    if number != number:  # noqa: PLR0124
         return None
     if number < low or number > high or (number == low and not allow_low):
         return None

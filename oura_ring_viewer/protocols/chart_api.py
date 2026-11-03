@@ -76,7 +76,7 @@ from oura_ring_viewer.services.storage import (
 
 
 def _now() -> dt.datetime:
-    return dt.datetime.now(dt.UTC)
+    return dt.datetime.now(dt.timezone.utc)
 
 
 @dataclass(frozen=True)
