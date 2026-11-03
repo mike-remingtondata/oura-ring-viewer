@@ -66,6 +66,9 @@ Verified against Oura itself:
 - A full connection on a Canvas test instance: staff link, Oura consent,
   callback, and every card populated from Oura's sandbox data.
 
+Reviewed with the Canvas Plugin Assistant's security and database-performance
+checklists: both pass. Reports are in `../reviews/`.
+
 ## Permissions requested
 
 Only `daily` and `spo2`. Those cover the sleep, readiness and activity
