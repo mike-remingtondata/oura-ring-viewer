@@ -1,13 +1,66 @@
-# oura_ring_viewer
+# Oura Ring Viewer
 
 ## What it does
 
-`oura_ring_viewer` brings a patient's Oura Ring data into the Canvas chart
-drawer. Staff send the patient a secure connection link, the patient approves
-sharing in Oura, and the chart then shows last night's sleep score, total
-sleep, resting heart rate and HRV, plus readiness, steps and overnight blood
-oxygen, with trends over the last 7, 14, 30 or 90 days. Data is read live
-from the Oura API v2 each time the chart opens and is never stored.
+Oura Ring Viewer brings a patient's Oura Ring data into the Canvas chart. The
+patient connects their ring with one tap from the patient portal, or from a
+link their care team sends, and approves sharing in Oura. The chart then shows
+last night's sleep score, total sleep, resting heart rate and HRV, plus
+readiness, steps and overnight blood oxygen, with trends over the last 7, 14,
+30 or 90 days. Data is read live from Oura each time the chart opens and is
+never stored. Patients can stop sharing from the portal at any time.
+
+## Problem it solves
+
+Patients who wear an Oura Ring often want their clinician to see how they are
+sleeping and recovering, but today that means showing screenshots from the Oura
+app during a visit, or typing numbers into a message. The care team only sees a
+single moment, has no trend, and cannot check before the visit. This plugin
+replaces that with a live, read-only view in the chart, under the patient's
+control, without copying any wearable data into the health record.
+
+## Who it's for
+
+- **Primary care, concierge and direct primary care practices** following
+  sleep, recovery and activity between visits.
+- **Behavioral health and sleep medicine clinicians** who want objective sleep
+  trends alongside what the patient reports.
+- **Health coaches, care managers and longevity or performance clinics** who
+  track readiness and activity over weeks.
+- **Patients** who already wear an Oura Ring and want their care team to see it.
+
+## How to install
+
+1. Create an application in the [Oura developer portal](https://developer.ouraring.com)
+   with the `daily` and `spo2` scopes, and register this redirect URI exactly:
+   `https://<your-instance>/plugin-io/api/oura_ring_viewer/callback`
+2. Install the plugin:
+
+   ```bash
+   canvas install oura_ring_viewer --host <your-instance>
+   ```
+
+3. In the instance's plugin settings, fill in the variables listed under
+   [Configuration options](#configuration-options). The plugin reports any
+   missing or unusable setting to staff by name.
+4. The patient portal menu now shows **Oura Ring**, and staff see an
+   **Oura Ring** app in the patient chart.
+
+Oura's sandbox serves test data without a ring. Leave `OURA_ENVIRONMENT` unset
+to try the plugin end to end before going live. Using real patient data needs
+Oura's approval of your application beyond its 10-user development limit.
+
+## Screenshots
+
+The care team view in the patient chart (Oura sandbox data):
+
+![Oura Ring panel in the patient chart showing sleep score, total sleep, resting heart rate, HRV, readiness and steps with 14-day trends](docs/screenshots/chart-summary.png)
+
+![Overnight blood oxygen card, with the note that data is read live from Oura and not saved to the chart](docs/screenshots/chart-blood-oxygen.png)
+
+The patient's view in the portal, showing what is shared and the Stop sharing button:
+
+![Oura Ring page in the patient portal showing Connected status, the data the care team can see, and a Stop sharing button](docs/screenshots/portal-connected.png)
 
 ## Scope and clinical framing
 
@@ -52,9 +105,9 @@ Link details:
 - A patient who starts from the portal while a staff link is out uses the same
   pending connection, so either path completes it.
 
-## Status
+## Testing and verification
 
-Feature complete for v1. Strict mypy is clean, line coverage is at 100%, and
+The plugin has 317 tests at 100% line coverage, strict mypy is clean, and
 `canvas validate` loads every handler in the Canvas sandbox.
 
 Verified against Oura itself:
@@ -67,7 +120,7 @@ Verified against Oura itself:
   callback, and every card populated from Oura's sandbox data.
 
 Reviewed with the Canvas Plugin Assistant's security and database-performance
-checklists: both pass. Reports are in `../reviews/`.
+checklists: both pass. Reports are in `reviews/`.
 
 ## Permissions requested
 
@@ -110,9 +163,9 @@ The plugin keeps two small tables, both per patient:
 Disconnect deletes both rows. Because there is no stored data, there is no
 retention job and nothing to purge.
 
-## Configuration
+## Configuration options
 
-Five manifest variables, two of them sensitive:
+Six plugin variables, two of them sensitive:
 
 | Variable | Sensitive | Notes |
 |---|---|---|
@@ -175,14 +228,13 @@ refused request changes nothing: no link is issued and nothing is deleted.
   plugin holds for the patient, but do not yet revoke the grant at Oura.
   Patients can revoke it in their Oura account, as the portal page says.
 
-## Open questions
+## Known limitations
 
-- **Production use at a practice.** Canvas confirmed (Nov 2, 2026) that
-  certification can run on Oura's sandbox data. Before any practice uses real
-  Oura data, Oura has to approve the application past its 10-user limit and,
-  under its API Agreement, approve each practice as an end customer.
-- **Revoking at Oura on disconnect.** Add once Oura's revoke endpoint can be
-  exercised with a registered application.
+- **Production use needs Oura's approval.** Oura limits a new API application
+  to 10 users and, under its API Agreement, approves each practice as an end
+  customer before real patient data is used.
+- **Disconnect does not yet revoke the grant at Oura.** Patients can revoke it
+  in their Oura account, as the portal page tells them.
 
 ## Development
 
@@ -208,4 +260,4 @@ at the HTTP layer; nothing in the test suite touches the network.
 
 ## License
 
-MIT. See `../LICENSE`.
+MIT. See `LICENSE`.
